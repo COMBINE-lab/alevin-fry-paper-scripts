@@ -1,0 +1,10 @@
+{
+	"kb_binary" : "/PATH/TO/KB/BINARY",
+	"salmon_binary" : "/PATH/TO/SALMON/BINARY",
+	"star_binary" : "/PATH/TO/STAR/BINARY",
+	"alevinfry_binary" : "/PATH/TO/ALEVINFRY/BINARY",
+	"top_dir" : "/PATH/TO/THE/TOP/DIRECTORY/",
+	"threads" : 16,
+	"flank_trim_length" : 5,
+	"force_build" : true
+}
