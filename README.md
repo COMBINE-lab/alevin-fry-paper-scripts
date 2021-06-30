@@ -1,4 +1,4 @@
-# af-private-scripts
+# alevin-fry-paper-scripts
 
 This directory includes the scripts for gathering and analyzing the data used in the alevin-fry manuscript.
 
