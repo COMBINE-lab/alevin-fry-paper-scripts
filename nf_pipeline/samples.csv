@@ -1,0 +1,6 @@
+name,dir,r1,r2,chem,ptype,org
+sim_data,/mnt/scratch1/alevin_fry_submission/samples/pbmc_5k_sims_human_CR_3.0.0_MultiGeneNo_rl91,"_R1_.fq.gz","_R2_.fq.gz",v3,single-cell,human-cr3
+pbmc10k,/mnt/scratch1/alevin_fry_submission/samples/human-pbmc10k_v3_rl91,"pbmc_10k_v3_S1_L001_R1_001.fastq.gz pbmc_10k_v3_S1_L002_R1_001.fastq.gz","pbmc_10k_v3_S1_L001_R2_001.fastq.gz pbmc_10k_v3_S1_L002_R2_001.fastq.gz",v3,single-cell,human-2020A
+dr_pineal_s2,/mnt/scratch1/alevin_fry_submission/samples/dr_pineal_s2_rl98,"SRR8315379_R1.fastq.gz SRR8315380_R1.fastq.gz","SRR8315379_R2.fastq.gz SRR8315380_R2.fastq.gz",v2,single-cell,zebrafish
+mouse_pancreas,/mnt/scratch1/alevin_fry_submission/samples/velocity_mouse_pancreas_rl151,"SRR9201794_1.fastq.gz","SRR9201794_2.fastq.gz",v2,velocity,mouse-cr2
+mouse_placenta,/mnt/scratch1/alevin_fry_submission/samples/nucleus_mouse_placenta_E14.5_rl150,"SRR11993485_1.fastq.gz SRR11993486_1.fastq.gz SRR11993487_1.fastq.gz SRR11993488_1.fastq.gz","SRR11993485_2.fastq.gz SRR11993486_2.fastq.gz SRR11993487_2.fastq.gz SRR11993488_2.fastq.gz",v3,single-nucleus,mouse-2020A
