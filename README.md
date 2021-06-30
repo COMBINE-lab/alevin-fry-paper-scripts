@@ -154,7 +154,7 @@ results/alevin_fry/sim_data/fry_sla_unfilt_quant_usa_cr-like
 results/alevin_fry/sim_data/fry_unfilt_quant_txome_cr-like
 ```
 
-### Running the different starsolo modes for the zebrafish sample
+### Running the different starsolo specific scripts
 Run the `star_zebrafish.sh` to generate the star output with different umi-deduplication strategies for the zebrafish sample.
 ```
 ./star_zebrafish.sh ../configs/config.json
@@ -164,6 +164,11 @@ Executing this script should lead to generating these results:
 ```
 results/star_solo/dr_pineal_s2/star_solo_1mm_dir
 results/star_solo/dr_pineal_s2/star_solo_exact
+```
+
+Then, run the `star_gzip.sh` script.
+```
+./star_gzip.sh ../configs/config.json
 ```
 
 ### Comparing the performance of different tools
