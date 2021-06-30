@@ -3,7 +3,7 @@
 This directory includes the scripts for gathering and analyzing the data used in the alevin-fry manuscript.
 
 
-First of all, make usre you have enough available space on your disk. Then clone the repository and navigate to the main directory of the repo:
+First of all, make sure you have enough available space on your disk. Then clone the repository and navigate to the main directory of the repo:
 ```
 $git clone git@github.com:COMBINE-lab/af-private-scripts.git
 $cd af-private-scripts
