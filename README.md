@@ -62,7 +62,7 @@ Before starting this step, make sure the required packages (`eisaR`, `Biostrings
 
 We need to build the splici reference which includes the intronic regions of the genes as well as the transcripts. To do so, please execute the `build_splici_txomes.sh` script.
 ```
-./build_splici_txomes.sh ../configs/config.json refs.csv
+$./build_splici_txomes.sh ../configs/config.json refs.csv
 ```
 
 If this script runs successfully, you should be able to locate the following files:
@@ -92,7 +92,7 @@ refs/dr-101-cr-ref/transcriptome_splici/transcriptome_splici_fl98.fa
 
 Run the `build_indices.sh` script for building all the indices.
 ```
-./build_indices.sh ../configs/config.json refs.csv
+$./build_indices.sh ../configs/config.json refs.csv
 ```
 
 Successfully running this step means that all the indices (salmon, starsolo and kb) are available in the following directories:
@@ -108,7 +108,7 @@ indices/dr-101
 
 To download the 10x permitlists for version 2 and version 3 chemistries, run the `gather_cr_barcodes.sh` script.
 ```
-./gather_cr_barcodes.sh ../configs/config.json
+$./gather_cr_barcodes.sh ../configs/config.json
 ```
 
 After this step the following files should be available:
@@ -121,7 +121,7 @@ permit_lists/10xv3barcodes.txt
 
 To download all the experimental samples used in the manuscript, please run:
 ```
-./gather_samples.sh ../configs/config.json
+$./gather_samples.sh ../configs/config.json
 ```
 
 After the successful run of the script you should be able to find the fastq files at the following directories:
@@ -145,7 +145,7 @@ $curl -s https://get.nextflow.io | bash
 The `nextflow` executable should be downloaded and placed in the working directory (`nf_pipeline`). To configure the nextflow, open the `configs/nf.config` and put the address for `salmon`, `alevinfry`, `star_solo` and `kb` binaries in the lines 18 to 21. Also set the value of the `top.dir` parameter at line 15, to the same value you used for `top_dir` in the `config.json` file. Then run the nextflow pipeline by:
 
 ```
-./launch.sh -n nextflow
+$./launch.sh -n nextflow
 ```
 
 This pipeline will perform single cell pre-processing with all three tools (`alevinfry`, `starsolo` and `kb`) for all the five datasets and the results for all the samples should be available at:
@@ -161,8 +161,8 @@ results/kb
 For the simualted sample, we evaluate results with different modes of alevinfry, to do so, navigate to `tool_specific` directory and execute the `salmon_af_sim.sh` script.
 
 ```
-cd ../tool_specific
-./salmon_af_sim.sh ../configs/config.json
+$cd ../tool_specific
+$./salmon_af_sim.sh ../configs/config.json
 ```
 
 Executing this script should lead to generating these results:
@@ -174,7 +174,7 @@ results/alevin_fry/sim_data/fry_unfilt_quant_txome_cr-like
 ### Running the different starsolo specific scripts
 Run the `star_zebrafish.sh` to generate the star output with different umi-deduplication strategies for the zebrafish sample.
 ```
-./star_zebrafish.sh ../configs/config.json
+$./star_zebrafish.sh ../configs/config.json
 ```
 
 Executing this script should lead to generating these results:
@@ -185,7 +185,7 @@ results/star_solo/dr_pineal_s2/star_solo_exact
 
 Then, run the `star_gzip.sh` script.
 ```
-./star_gzip.sh ../configs/config.json
+$./star_gzip.sh ../configs/config.json
 ```
 
 ### Comparing the performance of different tools
