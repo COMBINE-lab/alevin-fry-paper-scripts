@@ -78,7 +78,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 	let flank_length=$read_length-$flank_trim_length
 	fasta="$ref_dir/transcriptome_splici/transcriptome_splici_fl$flank_length.fa"
 
-	salmon_dir="$index_dir/salmon_fl${flank_trim_length}_index/"
+	salmon_dir="$index_dir/salmon_fl${flank_length}_index/"
 	mkdir -p $salmon_dir
 	cmd="/usr/bin/time -v -o $salmon_dir/index.time $salmon index -i $salmon_dir -t $fasta -p $threads"
 	if [ ! -f $salmon_dir/ctable.bin ] || [ $force_build = "true" ]; then
@@ -86,7 +86,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 		eval $cmd
 	fi
 	
-	salmon_dir="$index_dir/salmon_fl${flank_trim_length}_index_sparse/"
+	salmon_dir="$index_dir/salmon_fl${flank_length}_index_sparse/"
 	mkdir -p $salmon_dir
 	cmd="/usr/bin/time -v -o $salmon_dir/index.time $salmon index -i $salmon_dir -t $fasta -p $threads --sparse"
 	if [ ! -f $salmon_dir/ctable.bin ] || [ $force_build = "true" ]; then
