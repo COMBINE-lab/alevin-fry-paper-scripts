@@ -56,7 +56,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 	else
 		cmd="/usr/bin/time -v -o $kb_dir/index.time $kb ref -i $kb_dir/index.idx -g $kb_dir/t2g.txt \
 			 -f1 $kb_dir/cdna.fa -f2 $kb_dir/intron.fa -c1 $kb_dir/cdna_t2c.txt \
-			 -c2 $kb_dir/intron_t2c.txt --workflow $ind_typ $genome $gtf"
+			 -c2 $kb_dir/intron_t2c.txt --workflow $ind_type $genome $gtf"
 	fi
 	if [ ! -f $kb_dir/index.idx ] || [ $force_build = "true" ]; then
 		echo $cmd
@@ -67,7 +67,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 	star_dir="$index_dir/star_index/"
 	mkdir -p $star_dir
 
-	cmd="/usr/bin/time -v -o $star_dir/index.time $star --runMode genomeGenerate --runThreads $threads \
+	cmd="/usr/bin/time -v -o $star_dir/index.time $star --runMode genomeGenerate --runThreadsN $threads \
 			--gnomeDir $star_dir --genomeFastaFiles $genome --sjdbGTFfile $gtf"
 	if [ ! -f $star_dir/SA ] || [ $force_build = "true" ]; then
 		echo $cmd
@@ -81,7 +81,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 	salmon_dir="$index_dir/salmon_fl${flank_trim_length}_index/"
 	mkdir -p $salmon_dir
 	cmd="/usr/bin/time -v -o $salmon_dir/index.time $salmon index -i $salmon_dir -t $fasta -p $threads"
-	if [ ! -f $salmon_dir/pos.bin ] || [ $force_build = "true" ]; then
+	if [ ! -f $salmon_dir/ctable.bin ] || [ $force_build = "true" ]; then
 		echo $cmd
 		eval $cmd
 	fi
@@ -89,7 +89,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 	salmon_dir="$index_dir/salmon_fl${flank_trim_length}_index_sparse/"
 	mkdir -p $salmon_dir
 	cmd="/usr/bin/time -v -o $salmon_dir/index.time $salmon index -i $salmon_dir -t $fasta -p $threads --sparse"
-	if [ ! -f $salmon_dir/pos.bin ] || [ $force_build = "true" ]; then
+	if [ ! -f $salmon_dir/ctable.bin ] || [ $force_build = "true" ]; then
 		echo $cmd
 		eval $cmd
 	fi
@@ -98,8 +98,10 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 		fasta="$ref_dir/transcriptome.fa"
 		salmon_dir="$index_dir/salmon_txome_index/"
 		mkdir -p $salmon_dir
-		cmd="/usr/bin/time -v -o $salmon_dir/index.time $salmon index -i $salmon_dir -t $fasta -p $threads"
-		echo $cmd
-		eval $cmd
+		if [ ! -f $salmon_dir/ctable.bin ] || [ $force_build = "true" ]; then
+			cmd="/usr/bin/time -v -o $salmon_dir/index.time $salmon index -i $salmon_dir -t $fasta -p $threads"
+			echo $cmd
+			eval $cmd
+		fi
 	fi
 done < $refs_csv

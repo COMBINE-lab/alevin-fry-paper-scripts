@@ -23,8 +23,9 @@ tar -xzf $tmp_dir/refdata-gex-GRCh38-2020-A.tar.gz -C $refs_dir
 ### human CR3
 wget https://cf.10xgenomics.com/supp/cell-exp/refdata-cellranger-GRCh38-3.0.0.tar.gz -P $tmp_dir
 tar -xzf $tmp_dir/refdata-cellranger-GRCh38-3.0.0.tar.gz -C $refs_dir
-cr3ref="-C $refs_dir/refdata-cellranger-GRCh38-3.0.0"
+cr3ref="$refs_dir/refdata-cellranger-GRCh38-3.0.0"
 gffread -w $cr3ref/transcriptome.fa -g $cr3ref/fasta/genome.fa $cr3ref/genes/genes.gtf
+
 ### mm10 2020A
 wget https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-mm10-2020-A.tar.gz -P $tmp_dir
 tar -xzf $tmp_dir/refdata-gex-mm10-2020-A.tar.gz -C $refs_dir
