@@ -178,3 +178,22 @@ To generated the timing and peak memory plots, navigate to `notebooks` directory
 
 ### Computing the accuracy metrics for the simulated sample
 Navigate to `notebooks` directory and run all the lines in the `starsolo_sim_analysis.ipynb` jupyter notebook in order.
+
+### Velocity analysis for the mouse pancreas dataset
+
+To generate the RNA velocity streamlines plots and the latent time plots, navigate to `analysis_scripts/mouse_pancreas_velocity` and run the jupyter notebook files. 
+- For alevin-fry counts, run `mouse_pancreas_af_velocity_analysis.ipynb`.
+- For STARsolo counts, run `mouse_pancreas_st_velocity_analysis.ipynb`.
+- For kallisto|bustools counts, run `mouse_pancreas_kb_velocity_analysis.ipynb`.
+
+### Clustering analyses for the mouse placenta dataset 
+
+To generate the t-SNE plots and the dotplot of the expression of the cell type markers, navigate to `analysis_scripts/mouse_placenta_clustering` directory and run the RMD files in RStudio. 
+- For alevin-fry counts, run `mouse_placenta_nuclei_p14.5_alevinfry_analysis.Rmd`.
+- For STARsolo counts, run `mouse_placenta_nuclei_p14.5_starsolo_analysis.Rmd`.
+- For kallisto|bustools counts, run `mouse_placenta_nuclei_p14.5_kb_analysis.Rmd`.
+
+### Gene expression analysis for the zebrafish pineal dataset
+
+To generate the t-SNE plots and the dotplot of the expression of the cell type markers, navigate to `analysis_scripts/zebrafish_pineal_expression` directory and run the `zebrafish_pineal_expression_analysis.Rmd` in RStudio. 
+

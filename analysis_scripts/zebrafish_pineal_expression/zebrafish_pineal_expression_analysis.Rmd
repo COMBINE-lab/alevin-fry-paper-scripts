@@ -1,0 +1,2690 @@
+---
+title: "Cluster Analysis Clean"
+author: "Rob Patro"
+date: "5/27/2021"
+output: 
+    html_document:
+        keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# read in config.json file to get the top dir
+```{r}
+topdir = rjson::fromJSON(file = "../../configs/config.json")$top_dir
+gid_to_gname_path = file.path(topdir, "refs", "cr_index_dr101", "geneid_to_name.txt")
+kb_mtx_dir = file.path(topdir, "results", "kb", "dr_pineal_s2", "kb_out", "counts_unfiltered")
+st_dir = file.path(topdir, "results", "star_solo", "dr_pineal_s2")
+fry_dir = file.path(topdir, "results", "alevin_fry", "dr_pineal_s2")
+```
+
+
+## Functions used in the analysis 
+
+```{r}
+suppressPackageStartupMessages({
+    library(devtools)
+    library(ggplot2)
+    library(SingleCellExperiment)
+    library(Seurat)
+    library(Matrix)
+    library(DropletUtils)
+})
+set.seed(1234)
+dir.create("figures",recursive = TRUE, showWarnings = FALSE)
+```
+
+
+```{r}
+#' Read alevin-fry quantifications into a SingleCellExperiment object
+load_fry <- function(frydir, which_counts = c('S', 'A'), verbose = FALSE) {
+  suppressPackageStartupMessages({
+    library(rjson)
+    library(Matrix)
+    library(SingleCellExperiment)
+  })
+  
+  # read in metadata
+  meta_info <- fromJSON(file = file.path(frydir, "meta_info.json"))
+  ng <- meta_info$num_genes
+  usa_mode <- meta_info$usa_mode
+  
+  if (usa_mode) {
+    if (length(which_counts) == 0) {
+      stop("Please at least provide one status in 'U' 'S' 'A' ")
+    }
+    if (verbose) {
+      message("processing input in USA mode, will return ", paste(which_counts, collapse = '+'))
+    }
+  } else if (verbose) {
+    message("processing input in standard mode, will return spliced count")
+  }
+
+  # read in count matrix
+  af_raw <- readMM(file = file.path(frydir, "alevin", "quants_mat.mtx"))
+  # if usa mode, each gene gets 3 rows, so the actual number of genes is ng/3
+  if (usa_mode) {
+    if (ng %% 3 != 0) {
+      stop("The number of quantified targets is not a multiple of 3")
+    }
+    ng <- as.integer(ng/3)
+  }
+  
+  # read in gene name file and cell barcode file
+  afg <- read.csv(file.path(frydir, "alevin", "quants_mat_cols.txt"), 
+                  strip.white = TRUE, header = FALSE, nrows = ng, 
+                  col.names = c("gene_ids"), row.names = 1)
+  afc <- read.csv(file.path(frydir, "alevin", "quants_mat_rows.txt"), 
+                  strip.white = TRUE, header = FALSE,
+                  col.names = c("barcodes"), row.names = 1)
+
+  # if in usa_mode, sum up counts in different status according to which_counts
+  if (usa_mode) {
+    rd <- list("S" = seq(1, ng), "U" =  seq(ng + 1, 2 * ng),
+               "A" =  seq(2 * ng + 1, 3 * ng))
+    o <- af_raw[, rd[[which_counts[1]]], drop = FALSE]
+    for (wc in which_counts[-1]) {
+      o <- o + af_raw[, rd[[wc]], drop = FALSE]
+    }
+  } else {
+    o <- af_raw
+  }
+  
+  # create SingleCellExperiment object
+  sce <- SingleCellExperiment(list(counts = t(o)),
+                              colData = afc,
+                              rowData = afg
+  )
+  sce
+}
+```
+
+```{r}
+get_clusters <- function(seurat_obj, do_scale=TRUE) {
+  seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^mt-")
+  violin_plot <- VlnPlot(seurat_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  plot1 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "percent.mt")
+  plot2 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  feat_plot <- plot1 + plot2
+  
+  seurat_obj_filt <- subset(seurat_obj, subset = nFeature_RNA < 6000 & nCount_RNA < 25000)
+  seurat_obj_filt <- subset(seurat_obj_filt, subset = nFeature_RNA > 200 & nCount_RNA < 15000 & percent.mt < 30)
+  
+  seurat_obj_filt <- NormalizeData(seurat_obj_filt, normalization.method = "LogNormalize", scale.factor = 10000)
+
+  seurat_obj_filt <- FindVariableFeatures(seurat_obj_filt, selection.method = "vst", nfeatures = 2000)
+  
+  all.genes <- rownames(seurat_obj_filt)
+ 
+  seurat_obj_filt <- ScaleData(seurat_obj_filt, features = all.genes, do.scale=do_scale)
+  
+  seurat_obj_filt <- RunPCA(seurat_obj_filt, features = VariableFeatures(object = seurat_obj_filt))
+  pca_plot <- DimPlot(seurat_obj_filt, reduction = "pca")
+
+  seurat_obj_filt <- FindNeighbors(seurat_obj_filt, dims = 1:20)
+  
+  seurat_obj_filt_0.9 <- FindClusters(seurat_obj_filt, resolution = 0.9)
+  seurat_obj_filt_1.2 <- FindClusters(seurat_obj_filt, resolution = 1.2)
+  
+  seurat_obj_filt_0.9 <- RunTSNE(seurat_obj_filt_0.9, dims = 1:20)
+  seurat_obj_filt_1.2 <- RunTSNE(seurat_obj_filt_1.2, dims = 1:20)
+  
+  tsne0.9 <- DimPlot(seurat_obj_filt_0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+  tsne1.2 <- DimPlot(seurat_obj_filt_1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+  
+  # seurat_obj_filt_0.9.markers <- FindAllMarkers(seurat_obj_filt_0.9, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)    
+  # seurat_obj_filt_1.2.markers <- FindAllMarkers(seurat_obj_filt_1.2, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+  
+  feat_genes <- c("exorh", "gnat1", "gngt1", "gnat2", "gngt2a", "col14a1b", "opn1lw1", "parietopsin", "asip2b", "rpe65a", "dkk3b", 
+                  "fabp7b", "elavl4", "cart3", "gng8", "kiss1", "dcn", "igfbp5b", "cahz", "hbaa1", "ccr9a", "il4", "cd74a", "apoc1", 
+                  "kdrl", "plvapa", "epcam", "icn2")
+  dotplot_0.9 <- DotPlot(object = seurat_obj_filt_0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1), axis.title.y = element_blank(), axis.title.x = element_blank())
+  dotplot_1.2 <- DotPlot(object = seurat_obj_filt_1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1), axis.title.y = element_blank(), axis.title.x = element_blank())
+  
+  retlist <- list("violin_plot" = violin_plot, 
+                  "feat_plot" = feat_plot, 
+                  "pca_plot" = pca_plot, 
+                  "tsne0.9" = tsne0.9,
+                  "tsne1.2" = tsne1.2, 
+                  "dotplot0.9" = dotplot_0.9, 
+                  "dotplot1.2" = dotplot_1.2, 
+                  "obj0.9" = seurat_obj_filt_0.9, 
+                  "obj1.2" = seurat_obj_filt_1.2
+                  # ,"markers0.9" = seurat_obj_filt_0.9.markers
+                  # ,"markers1.2" = seurat_obj_filt_1.2.markers
+                  )
+  return(retlist) 
+}
+```
+
+```{r}
+filter_empty <- function(unfiltered_sce, lower=100) {
+  br.out <- barcodeRanks(counts(unfiltered_sce))
+  e.out <- emptyDrops(counts(unfiltered_sce), lower=lower)
+  is.cell <- e.out$FDR <= 0.01
+  is.cell[is.na(is.cell)] <- FALSE
+  sum(is.cell, na.rm=TRUE)
+  filtered_sce <- unfiltered_sce[,is.cell]
+  seu <- CreateSeuratObject(counts(filtered_sce))
+  return(seu)
+}
+```
+
+```{r}
+filter_empty_shainer <- function(sce) {
+  # parameters / method taken from https://github.com/mstemmer/kb-helper/blob/main/kb_data_to_seurat.Rmd
+  tot_counts <- colSums(counts(sce))
+  summary(tot_counts)
+  bc_rank <- barcodeRanks(counts(sce), lower = 500)
+   
+  # Remove genes that are not detected and empty droplets
+  sce <- sce[, tot_counts > metadata(bc_rank)$inflection]
+  dim(sce) # use print() to show output in a for loop
+  
+  seu <- CreateSeuratObject(counts(sce))
+  return(seu)
+}
+```
+
+
+```{r}
+gid_to_gname <- read.table(gid_to_gname_path)
+```
+
+```{r}
+fix_gene_names <- function(sce, gid_to_gname, strip_version=FALSE) {
+  if (strip_version) {
+    rownames(sce) <- sub("\\.\\d+", "", rownames(sce))
+  }
+  rownames(sce) <- gid_to_gname$V2[match(rownames(sce), gid_to_gname$V1)]
+  return(sce)
+}
+```
+
+```{r}
+load_kb_matrix <- function(matdir) {
+  
+  bcp <- file.path(matdir, "cells_x_genes.barcodes.txt")
+  gnp <- file.path(matdir, "cells_x_genes.genes.txt")
+  mp <- file.path(matdir, "cells_x_genes.mtx")
+  
+  kbc <- read.csv(bcp, strip.white = TRUE, header = FALSE,
+                  col.names = c("barcodes"), row.names = 1)
+  genes <- read.csv(gnp, strip.white = TRUE, header = FALSE,
+                  col.names = c("barcodes"), row.names = 1)
+  kbm <- readMM(mp)
+  kbme <- SingleCellExperiment(list(counts=t(kbm)), rowData=genes, colData=kbc)
+  return(kbme)
+}
+```
+
+
+```{r}
+feat_genes <- c("exorh", "gnat1", "gngt1", "gnat2", "gngt2a", "col14a1b", "opn1lw1", "parietopsin", "asip2b", "rpe65a", "dkk3b", 
+                "fabp7b", "elavl4", "cart3", "gng8", "kiss1", "dcn", "igfbp5b", "cahz", "hbaa1", "ccr9a", "il4", "cd74a", "apoc1", 
+                "kdrl", "plvapa", "epcam", "icn2")
+```
+
+
+## Processing using the filtering strategy used in shainer the pre-print
+
+ * Don't actually use `emptyDrops` function from DropletUtils. Pass `lower = 500` to `barcodeRanks`.
+ * Expicitly pass ` min.cells = 3, min.feature = 200` to `CreateSeuratObject`.
+
+
+Process the kallisto|bustools output.
+
+```{r, results='hide'}
+set.seed(1234)
+kbme <- load_kb_matrix(kb_mtx_dir)
+kbme <- fix_gene_names(kbme,gid_to_gname, strip_version=TRUE)
+obj_kbme_shainer <- filter_empty_shainer(kbme)
+
+kbme_shainer_res <- get_clusters(obj_kbme_shainer) 
+```
+
+
+### kallisto|bustools dot-plot at resolution 0.9
+
+```{r}
+kbme_shainer_res$dotplot0.9
+```
+
+
+```{r}
+kbme_shainer_res$obj0.9 <- RenameIdents(kbme_shainer_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`3` = "rod-like PhR",
+`7` = "rod-like PhR" ,
+`11` = "rod-like PhR" ,
+`18` =  "rod-like PhR" ,
+
+`17` = "red cone PhR" ,
+`19` = "PT cone PhR",
+
+`2` = "RPE-like",
+`5` = "RPE-like",
+
+`10` = "Muller glia-like"  ,
+`16` = "Muller glia-like",
+
+`14` = "neurons" ,
+
+`9` = "habenula neurons (gng8)",
+
+`4` = "habenula neurons (kiss1)",
+`6` = "habenula neurons (kiss1)" ,
+`21` = "habenula neurons (kiss1)",
+
+`8` = "fibroblasts",
+
+`12` = "erythrocytes" ,
+
+`13` = "leukocytes",
+
+`15` = "microglia/macrhophages",
+
+`20` = "vascular endothelial cells" ,
+
+`22` = "epithelial cells")
+
+levels(kbme_shainer_res$obj0.9) <- c("rod-like PhR", "red cone PhR", "PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+kbme_shainer_res$dotplot0.9 <- DotPlot(object = kbme_shainer_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r}
+kbme_shainer_res$tsne0.9 <- DimPlot(kbme_shainer_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_shainer_res$tsne0.9
+```
+
+### kallisto|bustools dot-plot at resolution 1.2
+
+```{r}
+kbme_shainer_res$dotplot1.2
+```
+
+```{r}
+kbme_shainer_res$obj1.2 <- RenameIdents(kbme_shainer_res$obj1.2,
+`0` = "rod-like PhR",
+`3` = "rod-like PhR",
+`4` = "rod-like PhR",
+`7` = "rod-like PhR" ,
+`10` = "rod-like PhR",
+`12` = "rod-like PhR"  ,
+`19` = "rod-like PhR" ,
+`23` = "rod-like PhR",
+
+`18` =  "red cone PhR" ,
+`20` = "PT cone PhR" ,
+
+`11` =  "Muller glia-like" ,
+`17` =  "Muller glia-like",
+
+`1` = "RPE-like",
+`5` = "RPE-like",
+
+`9` = "habenula neurons (gng8)",
+
+`2` =  "habenula neurons (kiss1)",
+`6` = "habenula neurons (kiss1)" ,
+`22` =  "habenula neurons (kiss1)",
+
+`8` = "fibroblasts",
+
+`13` = "erythrocytes" ,
+
+`14` = "leukocytes",
+
+`15` = "neurons" ,
+
+`16` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`24` = "epithelial cells")
+
+levels(kbme_shainer_res$obj1.2) <- c("rod-like PhR", "red cone PhR", "PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+kbme_shainer_res$dotplot1.2 <- DotPlot(object = kbme_shainer_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_shainer_res$dotplot1.2
+```
+
+```{r}
+kbme_shainer_res$tsne1.2 <- DimPlot(kbme_shainer_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank()) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_shainer_res$tsne1.2
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/kb_shainer_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_shainer_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r}
+pdf(file = "figures/kb_shainer_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_shainer_res$tsne0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r}
+pdf(file = "figures/kb_shainer_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_shainer_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r}
+pdf(file = "figures/kb_shainer_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_shainer_res$tsne1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r, show=FALSE}
+rm(kbme_shainer_res)
+rm(obj_kbme_shainer)
+rm(kbme)
+rm(kbm)
+gc()
+```
+
+
+
+Process the alevin-fry output.
+
+```{r, results='hide'}
+set.seed(1234)
+
+quant_sa_unfilt <- load_fry(file.path(fry_dir, "fry_unfilt_quant_usa_cr-like"), which_counts=c('S','A'))
+quant_sa_unfilt <- fix_gene_names(quant_sa_unfilt, gid_to_gname)
+af_sa_unfilt_shainer <- filter_empty_shainer(quant_sa_unfilt)
+af_sa_unfilt_shainer_res <- get_clusters(af_sa_unfilt_shainer) 
+```
+
+
+### alevin-fry dot-plot at resolution 0.9
+
+```{r}
+af_sa_unfilt_shainer_res$dotplot0.9
+```
+
+
+```{r}
+af_sa_unfilt_shainer_res$obj0.9 <- RenameIdents(af_sa_unfilt_shainer_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`6` = "rod-like PhR" ,
+`9` = "rod-like PhR",
+`16` = "rod-like PhR",
+`20` = "rod-like PhR",
+
+`15` = "red cone PhR",
+`18` =  "PT cone PhR" ,
+
+`3` = "RPE-like" ,
+`4` = "RPE-like",
+
+`7` = "Muller glia-like" ,
+
+`13` = "neurons",
+
+`8` = "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+`19` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`11` = "erythrocytes",
+
+`12` = "leukocytes",
+
+`14` = "microglia/macrhophages",
+
+`17` = "vascular endothelial cells",
+
+`21` = "epithelial cells")
+levels(af_sa_unfilt_shainer_res$obj0.9) <- c("rod-like PhR", "red cone PhR", "PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_unfilt_shainer_res$dotplot0.9 <- DotPlot(object = af_sa_unfilt_shainer_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_shainer_res$dotplot0.9
+```
+
+```{r}
+af_sa_unfilt_shainer_res$tsne0.9 <- DimPlot(af_sa_unfilt_shainer_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_shainer_res$tsne0.9 
+```
+
+
+### alevin-fry dot-plot at resolution 1.2
+
+
+```{r}
+af_sa_unfilt_shainer_res$dotplot1.2
+
+
+```
+
+
+```{r}
+af_sa_unfilt_shainer_res$obj1.2 <- RenameIdents(af_sa_unfilt_shainer_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`3` = "rod-like PhR" ,
+`6` = "rod-like PhR" ,
+`10` = "rod-like PhR",
+`19` = "rod-like PhR",
+`23` = "rod-like PhR",
+
+`18` =  "red cone PhR",
+`21` = "PT cone PhR" ,
+
+`4` = "RPE-like",
+`7` = "RPE-like" ,
+`12` = "RPE-like",
+
+`11` = "Muller glia-like",
+`16` = "Muller glia-like" ,
+
+`15` = "neurons",
+
+`9` = "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`8` =  "habenula neurons (kiss1)",
+`22` ="habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`13` =  "erythrocytes",
+
+`14` =  "leukocytes" ,
+
+`17` = "microglia/macrhophages" ,
+
+`20` = "vascular endothelial cells",
+
+`24` = "epithelial cells")
+levels(af_sa_unfilt_shainer_res$obj1.2) <- c("rod-like PhR", "red cone PhR", "PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_unfilt_shainer_res$dotplot1.2 <- DotPlot(object = af_sa_unfilt_shainer_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_shainer_res$dotplot1.2
+```
+
+```{r}
+af_sa_unfilt_shainer_res$tsne1.2 <- DimPlot(af_sa_unfilt_shainer_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_shainer_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/fry_shainer_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_shainer_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r}
+pdf(file = "figures/fry_shainer_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_shainer_res$tsne0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r}
+pdf(file = "figures/fry_shainer_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_shainer_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r}
+pdf(file = "figures/fry_shainer_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_shainer_res$tsne1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+
+```{r, show=FALSE}
+rm(af_sa_unfilt_shainer_res)
+rm(af_sa_unfilt_shainer)
+rm(quant_sa_unfilt)
+gc()
+```
+
+Process the STARsolo unfiltered output.
+
+```{r, results='hide'}
+set.seed(1234)
+ss_unfilt <- Read10X(file.path(st_dir, "star_solo", "Solo.out", "Gene", "raw"))
+ss_unfilt <- SingleCellExperiment(list(counts = ss_unfilt),
+                              colData = colnames(ss_unfilt),
+                              rowData = rownames(ss_unfilt))
+ss_unfilt_shainer <- filter_empty_shainer(ss_unfilt)
+ss_unfilt_shainer_res <- get_clusters(ss_unfilt_shainer) 
+```
+
+
+
+### STARsolo (1MM) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_shainer_res$dotplot0.9
+```
+
+
+```{r}
+ss_unfilt_shainer_res$obj0.9 <- RenameIdents(ss_unfilt_shainer_res$obj0.9,
+`0` = "rod-like PhR",
+`2` = "rod-like PhR" ,
+`3` = "rod-like PhR"  ,
+`6` = "rod-like PhR" ,
+`18` =  "rod-like PhR" ,
+`21` = "rod-like PhR",
+
+`15` = "cone PhR",
+
+`4` = "RPE-like",
+`8` = "RPE-like" ,
+`9` = "RPE-like",
+
+`12` = "Muller glia-like",
+`13` = "Muller glia-like",
+
+`16` = "neurons",
+
+`7` =  "habenula neurons (gng8)",
+
+`1` = "habenula neurons (kiss1)",
+`11` = "habenula neurons (kiss1)" ,
+`20` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`10` = "erythrocytes",
+
+`14` = "leukocytes",
+
+`17` = "microglia/macrhophages",
+
+`19` = "vascular endothelial cells",
+
+`22` = "epithelial cells")
+levels(ss_unfilt_shainer_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_shainer_res$dotplot0.9 <- DotPlot(object = ss_unfilt_shainer_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_shainer_res$dotplot0.9
+```
+
+```{r}
+ss_unfilt_shainer_res$tsne0.9 <- DimPlot(ss_unfilt_shainer_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_shainer_res$tsne0.9 
+```
+
+
+### STARsolo (1MM) dot-plot at resolution 1.2
+
+
+```{r}
+ss_unfilt_shainer_res$dotplot1.2
+```
+
+
+```{r}
+ss_unfilt_shainer_res$obj1.2 <- RenameIdents(ss_unfilt_shainer_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR" ,
+`5` = "rod-like PhR" ,
+`6` = "rod-like PhR" ,
+`18` =  "rod-like PhR" ,
+`21` = "rod-like PhR",
+
+`15` = "cone PhR",
+
+`3` = "RPE-like"  ,
+`7` =  "RPE-like" ,
+`9` = "RPE-like",
+
+`12` = "Muller glia-like",
+`13` = "Muller glia-like",
+
+`16` = "neurons",
+
+`8` = "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`11` = "habenula neurons (kiss1)",
+`20` = "habenula neurons (kiss1)",
+
+`4` = "fibroblasts",
+
+`10` = "erythrocytes",
+
+`14` = "leukocytes",
+`23` = "leukocytes", 
+
+`17` = "microglia/macrhophages",
+
+`19` = "vascular endothelial cells",
+`22` = "epithelial cells")
+levels(ss_unfilt_shainer_res$obj1.2) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_shainer_res$dotplot1.2 <- DotPlot(object = ss_unfilt_shainer_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_shainer_res$dotplot1.2
+```
+
+```{r}
+ss_unfilt_shainer_res$tsne1.2 <- DimPlot(ss_unfilt_shainer_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_shainer_res$tsne1.2 
+```
+
+
+
+# save them
+```{r}
+pdf(file = "figures/st_1mm_shainer_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_shainer_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r}
+pdf(file = "figures/st_1mm_shainer_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_shainer_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r}
+pdf(file = "figures/st_1mm_shainer_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_shainer_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+```{r}
+pdf(file = "figures/st_1mm_shainer_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_shainer_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+
+
+```{r, show=FALSE}
+rm(ss_unfilt_shainer_res)
+rm(ss_unfilt_shainer)
+rm(ss_unfilt)
+gc()
+```
+
+Process the STARsolo unfiltered output using the directional resolution strategy.
+
+```{r, results='hide'}
+set.seed(1234)
+ss_unfilt_1mmdir <- Read10X(file.path(st_dir, "star_solo_1mm_dir", "Solo.out", "Gene", "raw"))
+ss_unfilt_1mmdir <- SingleCellExperiment(list(counts = ss_unfilt_1mmdir),
+                              colData = colnames(ss_unfilt_1mmdir),
+                              rowData = rownames(ss_unfilt_1mmdir))
+ss_unfilt_1mmdir_shainer <- filter_empty_shainer(ss_unfilt_1mmdir)
+ss_unfilt_1mmdir_shainer_res <- get_clusters(ss_unfilt_1mmdir_shainer) 
+```
+
+
+
+### STARsolo (1MMdir) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_1mmdir_shainer_res$dotplot0.9
+```
+
+
+```{r}
+ss_unfilt_1mmdir_shainer_res$obj0.9 <- RenameIdents(ss_unfilt_1mmdir_shainer_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`8` = "rod-like PhR",
+`19` = "rod-like PhR",
+
+`15` = "red cone PhR",
+`17` = "PT cone PhR",
+
+`3` = "RPE-like",
+`5` = "RPE-like",
+`10` = "RPE-like",
+
+`6` = "Muller glia-like",
+
+`13` = "neurons",
+
+`7` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+`18` = "habenula neurons (kiss1)",
+
+`4` = "fibroblasts",
+
+`11` = "erythrocytes",
+
+`12` = "leukocytes",
+
+`14` = "microglia/macrhophages",
+
+`16` = "vascular endothelial cells",
+
+`20` = "epithelial cells"
+
+)
+levels(ss_unfilt_1mmdir_shainer_res$obj0.9) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_1mmdir_shainer_res$dotplot0.9 <- DotPlot(object = ss_unfilt_1mmdir_shainer_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_shainer_res$dotplot0.9
+```
+
+
+
+
+
+```{r}
+ss_unfilt_1mmdir_shainer_res$tsne0.9 <- DimPlot(ss_unfilt_1mmdir_shainer_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_shainer_res$tsne0.9 
+```
+
+### STARsolo (1MMdir) dot-plot at resolution 1.2
+
+
+```{r}
+ss_unfilt_1mmdir_shainer_res$dotplot1.2
+```
+
+
+
+```{r}
+ss_unfilt_1mmdir_shainer_res$obj1.2 <- RenameIdents(ss_unfilt_1mmdir_shainer_res$obj1.2,
+`0` = "rod-like PhR",
+`2` = "rod-like PhR",
+`3` = "rod-like PhR",
+`6` = "rod-like PhR",
+`18` = "rod-like PhR",
+`22` = "rod-like PhR",
+
+`17` = "red cone PhR",
+`20` = "PT cone PhR",
+
+`4` = "RPE-like",
+`7` = "RPE-like",
+`11` = "RPE-like",
+
+`10` = "Muller glia-like",
+`16` = "Muller glia-like",
+
+`14` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`1` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+`21` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`12` = "erythrocytes",
+
+`13` = "leukocytes",
+
+`15` = "microglia/macrhophages",
+
+`19` = "vascular endothelial cells",
+
+`23` = "epithelial cells"
+
+)
+levels(ss_unfilt_1mmdir_shainer_res$obj1.2) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_1mmdir_shainer_res$dotplot1.2 <- DotPlot(object = ss_unfilt_1mmdir_shainer_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_shainer_res$dotplot1.2
+```
+
+```{r}
+ss_unfilt_1mmdir_shainer_res$tsne1.2 <- DimPlot(ss_unfilt_1mmdir_shainer_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_shainer_res$tsne1.2 
+```
+
+# save them
+```{r}
+pdf(file = "figures/st_1mmDir_shainer_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_shainer_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mmDir_shainer_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_shainer_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/st_1mmDir_shainer_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_shainer_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mmDir_shainer_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_shainer_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+
+```{r, show=FALSE}
+rm(ss_unfilt_1mmdir_shainer_res)
+rm(ss_unfilt_1mmdir_shainer)
+rm(ss_unfilt_1mmdir)
+gc()
+```
+
+Process the STARsolo unfiltered output using the exact deduplication resolution strategy.
+
+```{r, results='hide'}
+set.seed(1234)
+ss_unfilt_1mmdir <- Read10X(file.path(st_dir, "star_solo_exact", "Solo.out", "Gene", "raw"))
+
+ss_unfilt_ex <- SingleCellExperiment(list(counts = ss_unfilt_ex),
+                              colData = colnames(ss_unfilt_ex),
+                              rowData = rownames(ss_unfilt_ex))
+ss_unfilt_ex_shainer <- filter_empty_shainer(ss_unfilt_ex)
+ss_unfilt_ex_shainer_res <- get_clusters(ss_unfilt_ex_shainer) 
+```
+
+### STARsolo (exact) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_ex_shainer_res$dotplot0.9
+```
+
+
+
+```{r}
+ss_unfilt_ex_shainer_res$obj0.9 <- RenameIdents(ss_unfilt_ex_shainer_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`7` = "rod-like PhR",
+`18` = "rod-like PhR",
+
+`14` = "red cone PhR",
+`15` = "PT cone PhR",
+
+`3` = "RPE-like",
+`4` = "RPE-like",
+
+`6` = "Muller glia-like",
+
+`12` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+`17` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`10` = "erythrocytes",
+
+`11` = "leukocytes",
+
+`13` = "microglia/macrhophages",
+
+`16` = "vascular endothelial cells",
+
+`19` = "epithelial cells"
+
+)
+levels(ss_unfilt_ex_shainer_res$obj0.9) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_ex_shainer_res$dotplot0.9 <- DotPlot(object = ss_unfilt_ex_shainer_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_shainer_res$dotplot0.9
+```
+
+```{r}
+ss_unfilt_ex_shainer_res$tsne0.9 <- DimPlot(ss_unfilt_ex_shainer_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_shainer_res$tsne0.9 
+```
+
+
+### STARsolo (exact) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_ex_shainer_res$dotplot1.2
+```
+
+
+
+```{r}
+ss_unfilt_ex_shainer_res$obj1.2 <- RenameIdents(ss_unfilt_ex_shainer_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`5` = "rod-like PhR",
+`6` = "rod-like PhR",
+`21` = "rod-like PhR",
+
+`17` = "red cone PhR",
+`18` = "PT cone PhR",
+
+`3` = "RPE-like",
+`8` = "RPE-like",
+`10` = "RPE-like",
+
+`12` = "Muller glia-like",
+`14` = "Muller glia-like",
+
+`15` = "neurons",
+
+`7` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+`20` = "habenula neurons (kiss1)",
+
+`4` = "fibroblasts",
+
+`11` = "erythrocytes",
+
+`13` = "leukocytes",
+`23` = "leukocytes",
+
+`16` = "microglia/macrhophages",
+
+`19` = "vascular endothelial cells",
+
+`22` = "epithelial cells"
+
+)
+levels(ss_unfilt_ex_shainer_res$obj1.2) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_ex_shainer_res$dotplot1.2 <- DotPlot(object = ss_unfilt_ex_shainer_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_shainer_res$dotplot1.2
+```
+
+```{r}
+ss_unfilt_ex_shainer_res$tsne1.2 <- DimPlot(ss_unfilt_ex_shainer_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_shainer_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/st_exact_shainer_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_shainer_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_exact_shainer_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_shainer_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/st_exact_shainer_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_shainer_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_exact_shainer_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_shainer_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+```{r, show=FALSE}
+rm(ss_unfilt_ex_shainer_res)
+rm(ss_unfilt_ex_shainer)
+rm(ss_unfilt_ex)
+gc()
+```
+
+## Processing without special filtering and using emptyDrops
+
+ * Don't place a lower bound on `barcodeRanks` to allow better estimation of ambient background.
+ * Use `emptyDrops` function (with FDR of 0.01 as in the vignette) to determine droplet set.
+ * Don't alter defaults of `CreateSeuratObject`.
+
+
+Process the kallisto|bustools output.
+
+```{r, results='hide'}
+set.seed(1234)
+kbme <- load_kb_matrix(kb_mtx_dir)
+kbme <- fix_gene_names(kbme,gid_to_gname, strip_version=TRUE)
+kbme_filt <- filter_empty(kbme)
+```
+
+
+```{r, results='hide'}
+kbme_filt_res <- get_clusters(kbme_filt)
+```
+
+
+### kallisto|bustools dot-plot at resolution 0.9
+
+```{r}
+kbme_filt_res$dotplot0.9
+```
+
+
+
+```{r}
+kbme_filt_res$obj0.9 <- RenameIdents(kbme_filt_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`8` = "rod-like PhR",
+`16` = "rod-like PhR",
+`18` = "rod-like PhR",
+
+`13` = "cone PhR",
+
+`3` = "RPE-like",
+`5` = "RPE-like",
+
+`7` = "Muller glia-like",
+`12` = "Muller glia-like",
+
+`14` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`4` = "erythrocytes",
+
+`11` = "leukocytes",
+`19` = "leukocytes",
+
+`15` = "microglia/macrhophages",
+
+`17` = "vascular endothelial cells",
+
+`20` = "epithelial cells"
+
+
+)
+levels(kbme_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+kbme_filt_res$dotplot0.9 <- DotPlot(object = kbme_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_filt_res$dotplot0.9
+```
+
+```{r}
+kbme_filt_res$tsne0.9 <- DimPlot(kbme_filt_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_filt_res$tsne0.9 
+```
+
+### kallisto|bustools dot-plot at resolution 1.2
+
+```{r}
+kbme_filt_res$dotplot1.2
+```
+
+
+
+```{r}
+kbme_filt_res$obj1.2 <- RenameIdents(kbme_filt_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`5` = "rod-like PhR",
+`6` = "rod-like PhR",
+`11` = "rod-like PhR",
+`13` = "rod-like PhR",
+`21` = "rod-like PhR",
+`22` = "rod-like PhR",
+
+`17` = "cone PhR",
+
+`3` = "RPE-like",
+`8` = "RPE-like",
+`10` = "RPE-like",
+
+`15` = "Muller glia-like",
+`16` = "Muller glia-like",
+
+`18` = "neurons",
+
+`12` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+
+`7` = "fibroblasts",
+
+`4` = "erythrocytes",
+
+`14` = "leukocytes",
+`23` = "leukocytes",
+
+`20` = "microglia/macrhophages",
+
+`19` = "vascular endothelial cells",
+
+`24` = "epithelial cells"
+)
+levels(kbme_filt_res$obj1.2) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells","epithelial cells")
+kbme_filt_res$dotplot1.2 <- DotPlot(object = kbme_filt_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_filt_res$dotplot1.2
+```
+
+```{r}
+kbme_filt_res$tsne1.2 <- DimPlot(kbme_filt_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_filt_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/kb_emptyDrops_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_filt_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/kb_emptyDrops_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_filt_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/kb_emptyDrops_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_filt_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/kb_emptyDrops_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_filt_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+```{r, show=FALSE}
+rm(kbme_filt_res)
+rm(kbme_filt)
+rm(kbme)
+rm(kbm)
+gc()
+```
+
+Process the alevin-fry output.
+
+```{r, results='hide'}
+set.seed(1234)
+
+quant_sa_unfilt <- load_fry(file.path(fry_dir, "fry_unfilt_quant_usa_cr-like"), which_counts=c('S','A'))
+quant_sa_unfilt <- fix_gene_names(quant_sa_unfilt, gid_to_gname)
+af_sa_unfilt_filt <- filter_empty(quant_sa_unfilt)
+```
+
+```{r}
+af_sa_unfilt_filt_res <- get_clusters(af_sa_unfilt_filt) 
+```
+
+
+
+### alevin-fry dot-plot at resolution 0.9
+
+```{r}
+af_sa_unfilt_filt_res$dotplot0.9
+```
+
+
+
+```{r}
+af_sa_unfilt_filt_res$obj0.9 <- RenameIdents(af_sa_unfilt_filt_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`10` = "rod-like PhR",
+`17` = "rod-like PhR",
+`18` = "rod-like PhR",
+
+`13` = "cone PhR",
+
+`2` = "RPE-like",
+`4` = "RPE-like",
+
+`6` = "Muller glia-like",
+`12` = "Muller glia-like",
+
+`15` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`3` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`7` = "erythrocytes",
+
+`11` = "leukocytes",
+`19` = "leukocytes",
+
+`16` = "microglia/macrhophages",
+
+`14` = "epithelial/endothelial cells"
+
+
+)
+levels(af_sa_unfilt_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "epithelial/endothelial cells")
+af_sa_unfilt_filt_res$dotplot0.9 <- DotPlot(object = af_sa_unfilt_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_filt_res$dotplot0.9
+```
+
+```{r}
+af_sa_unfilt_filt_res$tsne0.9 <- DimPlot(af_sa_unfilt_filt_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_filt_res$tsne0.9 
+```
+
+
+### alevin-fry dot-plot at resolution 1.2
+
+
+```{r}
+af_sa_unfilt_filt_res$dotplot1.2
+```
+
+
+
+```{r}
+af_sa_unfilt_filt_res$obj1.2 <- RenameIdents(af_sa_unfilt_filt_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`5` = "rod-like PhR",
+`11` = "rod-like PhR",
+`12` = "rod-like PhR",
+`19` = "rod-like PhR",
+`22` = "rod-like PhR",
+
+`16` = "cone PhR",
+
+`3` = "RPE-like",
+`4` = "RPE-like",
+`8` = "RPE-like",
+
+`14` = "Muller glia-like",
+`15` = "Muller glia-like",
+
+`17` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`7` = "erythrocytes",
+
+`13` = "leukocytes",
+`23` = "leukocytes",
+
+`18` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`20` = "epithelial cells"
+
+)
+levels(af_sa_unfilt_filt_res$obj1.2) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_unfilt_filt_res$dotplot1.2 <- DotPlot(object = af_sa_unfilt_filt_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_filt_res$dotplot1.2
+```
+
+```{r}
+af_sa_unfilt_filt_res$tsne1.2 <- DimPlot(af_sa_unfilt_filt_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_filt_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/fry_emptyDrops_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_filt_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/fry_emptyDrops_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_filt_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/fry_emptyDrops_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_filt_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/fry_emptyDrops_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_unfilt_filt_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+```{r, show=FALSE}
+rm(af_sa_unfilt_filt_res)
+rm(af_sa_unfilt_filt)
+gc()
+```
+
+Process the STARsolo unfiltered output.
+
+```{r, results='hide'}
+set.seed(1234)
+ss_unfilt <- Read10X(file.path(st_dir, "star_solo", "Solo.out", "Gene", "raw"))
+ss_unfilt <- SingleCellExperiment(list(counts = ss_unfilt),
+                              colData = colnames(ss_unfilt),
+                              rowData = rownames(ss_unfilt))
+ss_unfilt_filt <- filter_empty(ss_unfilt)
+ss_unfilt_filt_res <- get_clusters(ss_unfilt_filt) 
+```
+
+
+
+### STARsolo (1MM) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_filt_res$dotplot0.9
+```
+
+
+```{r}
+ss_unfilt_filt_res$obj0.9 <- RenameIdents(ss_unfilt_filt_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`11` = "rod-like PhR",
+`17` = "rod-like PhR",
+`19` = "rod-like PhR",
+
+`14` = "cone PhR",
+
+`3` = "RPE-like",
+`4` = "RPE-like",
+`5` = "RPE-like",
+
+`7` = "Muller glia-like",
+`13` = "Muller glia-like",
+
+`15` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`8` = "erythrocytes",
+
+`12` = "leukocytes",
+`20` = "leukocytes",
+
+`16` = "microglia/macrhophages",
+
+`18` = "vascular endothelial cells"
+
+)
+levels(ss_unfilt_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells")
+ss_unfilt_filt_res$dotplot0.9 <- DotPlot(object = ss_unfilt_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_filt_res$dotplot0.9
+```
+
+```{r}
+ss_unfilt_filt_res$tsne0.9 <- DimPlot(ss_unfilt_filt_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_filt_res$tsne0.9 
+```
+
+
+### STARsolo (1MM) dot-plot at resolution 1.2
+
+
+```{r}
+ss_unfilt_filt_res$dotplot1.2
+```
+
+
+```{r}
+ss_unfilt_filt_res$obj1.2 <- RenameIdents(ss_unfilt_filt_res$obj1.2,
+`0` = "rod-like PhR",
+`2` = "rod-like PhR",
+`3` = "rod-like PhR",
+`10` = "rod-like PhR",
+`14` = "rod-like PhR",
+`20` = "rod-like PhR",
+`22` = "rod-like PhR",
+`23` = "rod-like PhR",
+
+`16` = "cone PhR",
+
+`4` = "RPE-like",
+`5` = "RPE-like",
+`6` = "RPE-like",
+
+`12` = "Muller glia-like",
+`13` = "Muller glia-like",
+
+`18` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`1` = "habenula neurons (kiss1)",
+`11` = "habenula neurons (kiss1)",
+
+`7` = "fibroblasts",
+
+`8` = "erythrocytes",
+
+`15` = "leukocytes",
+`24` = "leukocytes",
+
+`19` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`17` = "epithelial cells"
+
+)
+levels(ss_unfilt_filt_res$obj1.2) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_filt_res$dotplot1.2 <- DotPlot(object = ss_unfilt_filt_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_filt_res$dotplot1.2
+```
+
+```{r}
+ss_unfilt_filt_res$tsne1.2 <- DimPlot(ss_unfilt_filt_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_filt_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/st_1mm_emptyDrops_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_filt_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mm_emptyDrops_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_filt_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/st_1mm_emptyDrops_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_filt_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mm_emptyDrops_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_filt_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+```{r, show=FALSE}
+rm(ss_unfilt_filt)
+rm(ss_unfilt_filt_res)
+gc()
+```
+
+Process the STARsolo unfiltered output using the directional resolution strategy.
+
+```{r, results='hide'}
+set.seed(1234)
+
+ss_unfilt_1mmdir <- Read10X(file.path(st_dir, "star_solo_1mm_dir", "Solo.out", "Gene", "raw"))
+ss_unfilt_1mmdir <- SingleCellExperiment(list(counts = ss_unfilt_1mmdir),
+                              colData = colnames(ss_unfilt_1mmdir),
+                              rowData = rownames(ss_unfilt_1mmdir))
+ss_unfilt_1mmdir_filt <- filter_empty(ss_unfilt_1mmdir)
+ss_unfilt_1mmdir_filt_res <- get_clusters(ss_unfilt_1mmdir_filt) 
+```
+
+
+
+### STARsolo (1MMdir) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_1mmdir_filt_res$dotplot0.9
+```
+
+
+
+```{r}
+ss_unfilt_1mmdir_filt_res$obj0.9 <- RenameIdents(ss_unfilt_1mmdir_filt_res$obj0.9,
+`0` = "rod-like PhR",
+`2` = "rod-like PhR",
+`11` = "rod-like PhR",
+`18` = "rod-like PhR",
+`20` = "rod-like PhR",
+
+`16` = "cone PhR",
+
+`3` = "RPE-like",
+`4` = "RPE-like",
+`6` = "RPE-like",
+
+`8` = "Muller glia-like",
+`13` = "Muller glia-like",
+
+`14` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`1` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+`19` = "fibroblasts",
+
+`7` = "erythrocytes",
+
+`12` = "leukocytes",
+`21` = "leukocytes",
+
+`17` = "microglia/macrhophages",
+
+`15` = "epithelial/endothelial cells"
+
+)
+levels(ss_unfilt_1mmdir_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "epithelial/endothelial cells")
+ss_unfilt_1mmdir_filt_res$dotplot0.9 <- DotPlot(object = ss_unfilt_1mmdir_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_filt_res$dotplot0.9
+```
+
+```{r}
+ss_unfilt_1mmdir_filt_res$tsne0.9 <- DimPlot(ss_unfilt_1mmdir_filt_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_filt_res$tsne0.9 
+```
+
+
+
+### STARsolo (1MMdir) dot-plot at resolution 1.2
+
+
+```{r}
+ss_unfilt_1mmdir_filt_res$dotplot1.2
+```
+
+
+```{r}
+ss_unfilt_1mmdir_filt_res$obj1.2 <- RenameIdents(ss_unfilt_1mmdir_filt_res$obj1.2,
+`0` = "rod-like PhR",
+`2` = "rod-like PhR",
+`3` = "rod-like PhR",
+`11` = "rod-like PhR",
+`15` = "rod-like PhR",
+`17` = "rod-like PhR",
+`18` = "rod-like PhR",
+`22` = "rod-like PhR",
+
+`16` = "cone PhR",
+
+`4` = "RPE-like",
+`5` = "RPE-like",
+`7` = "RPE-like",
+
+`13` = "Muller glia-like",
+`14` = "Muller glia-like",
+
+`19` = "neurons",
+
+`10` =  "habenula neurons (gng8)",
+
+`1` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`8` = "erythrocytes",
+
+`12` = "leukocytes",
+`23` = "leukocytes",
+
+`20` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`24` = "epithelial cells"
+
+)
+levels(ss_unfilt_1mmdir_filt_res$obj1.2) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_1mmdir_filt_res$dotplot1.2 <- DotPlot(object = ss_unfilt_1mmdir_filt_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_filt_res$dotplot1.2
+```
+
+```{r}
+ss_unfilt_1mmdir_filt_res$tsne1.2 <- DimPlot(ss_unfilt_1mmdir_filt_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_1mmdir_filt_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/st_1mmDir_emptyDrops_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_filt_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mmDir_emptyDrops_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_filt_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/st_1mmDir_emptyDrops_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_filt_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mmDir_emptyDrops_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_1mmdir_filt_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+
+```{r, show=FALSE}
+rm(ss_unfilt_1mmdir_filt_res)
+rm(ss_unfilt_1mmdir_filt)
+gc()
+```
+
+
+Process the STARsolo unfiltered output using the exact deduplication resolution strategy.
+
+
+```{r, results='hide'}
+set.seed(1234)
+ss_unfilt_ex <- Read10X(file.path(st_dir, "star_solo_exact", "Solo.out", "Gene", "raw"))
+ss_unfilt_ex <- SingleCellExperiment(list(counts = ss_unfilt_ex),
+                              colData = colnames(ss_unfilt_ex),
+                              rowData = rownames(ss_unfilt_ex))
+ss_unfilt_ex_filt <- filter_empty(ss_unfilt_ex)
+ss_unfilt_ex_filt_res <- get_clusters(ss_unfilt_ex_filt) 
+```
+
+### STARsolo (exact) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_ex_filt_res$dotplot0.9
+```
+
+
+```{r}
+ss_unfilt_ex_filt_res$obj0.9 <- RenameIdents(ss_unfilt_ex_filt_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`10` = "rod-like PhR",
+`18` = "rod-like PhR",
+`19` = "rod-like PhR",
+
+`15` = "cone PhR",
+
+`3` = "RPE-like",
+`4` = "RPE-like",
+`7` = "RPE-like",
+
+`8` = "Muller glia-like",
+`13` = "Muller glia-like",
+
+`14` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`11` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`6` = "erythrocytes",
+
+`12` = "leukocytes",
+`20` = "leukocytes",
+
+`17` = "microglia/macrhophages",
+
+`16` = "epithelial/endothelial cells"
+
+
+)
+levels(ss_unfilt_ex_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "epithelial/endothelial cells")
+ss_unfilt_ex_filt_res$dotplot0.9 <- DotPlot(object = ss_unfilt_ex_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_filt_res$dotplot0.9
+```
+
+```{r}
+ss_unfilt_ex_filt_res$tsne0.9 <- DimPlot(ss_unfilt_ex_filt_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_filt_res$tsne0.9 
+```
+
+
+### STARsolo (exact) dot-plot at resolution 0.9
+
+```{r}
+ss_unfilt_ex_filt_res$dotplot1.2
+```
+
+
+```{r}
+ss_unfilt_ex_filt_res$obj1.2 <- RenameIdents(ss_unfilt_ex_filt_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`8` = "rod-like PhR",
+`10` = "rod-like PhR",
+`20` = "rod-like PhR",
+
+`16` = "cone PhR",
+
+`3` = "RPE-like",
+`4` = "RPE-like",
+`6` = "RPE-like",
+
+`13` = "Muller glia-like",
+`14` = "Muller glia-like",
+
+`15` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`11` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`7` = "erythrocytes",
+
+`12` = "leukocytes",
+`21` = "leukocytes",
+
+`18` = "microglia/macrhophages",
+
+`19` = "vascular endothelial cells",
+
+`17` = "epithelial cells"
+
+)
+levels(ss_unfilt_ex_filt_res$obj1.2) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_unfilt_ex_filt_res$dotplot1.2 <- DotPlot(object = ss_unfilt_ex_filt_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_filt_res$dotplot1.2
+```
+
+```{r}
+ss_unfilt_ex_filt_res$tsne1.2 <- DimPlot(ss_unfilt_ex_filt_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_unfilt_ex_filt_res$tsne1.2 
+```
+
+# save them
+```{r}
+pdf(file = "figures/st_exact_emptyDrops_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_filt_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_exact_emptyDrops_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_filt_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/st_exact_emptyDrops_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_filt_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_exact_emptyDrops_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_unfilt_ex_filt_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+```{r, show=FALSE}
+rm(ss_unfilt_ex_filt_res)
+rm(ss_unfilt_ex_filt)
+gc()
+```
+
+
+## Process using the cell set determined by alevin-fry's knee procedure
+
+Load alevin-fry first to get the cell set
+
+```{r, results='hide'}
+set.seed(1234)
+af_sa_knee <- load_fry(file.path(fry_dir, "fry_knee_quant_usa_cr-like"), which_counts=c('S','A'))
+af_sa_knee <- fix_gene_names(af_sa_knee,gid_to_gname)
+af_sa_knee_obj <- CreateSeuratObject(counts(af_sa_knee))
+af_sa_knee_res <- get_clusters(af_sa_knee_obj) 
+```
+
+
+### alevin-fry (knee) dot-plot at resolution 0.9
+
+```{r}
+af_sa_knee_res$dotplot0.9
+```
+
+
+
+```{r}
+af_sa_knee_res$obj0.9 <- RenameIdents(af_sa_knee_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`4` = "rod-like PhR",
+`10` = "rod-like PhR",
+`11` = "rod-like PhR",
+`20` = "rod-like PhR",
+
+`16` = "red cone PhR",
+`17` = "PT cone PhR",
+
+`2` = "RPE-like",
+`5` = "RPE-like",
+
+`8` = "Muller glia-like",
+
+`13` = "neurons",
+
+`7` =  "habenula neurons (gng8)",
+
+`3` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+`19` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`12` = "erythrocytes",
+
+`15` = "leukocytes",
+
+`14` = "microglia/macrhophages",
+
+`18` = "vascular endothelial cells",
+
+`21` = "epithelial cells"
+
+)
+levels(af_sa_knee_res$obj0.9) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_knee_res$dotplot0.9 <- DotPlot(object = af_sa_knee_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_knee_res$dotplot0.9
+```
+
+```{r}
+af_sa_knee_res$tsne0.9 <- DimPlot(af_sa_knee_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_knee_res$tsne0.9 
+```
+
+
+### alevin-fry (knee) dot-plot at resolution 1.2
+
+```{r}
+af_sa_knee_res$dotplot1.2
+```
+
+
+
+```{r}
+af_sa_knee_res$obj1.2 <- RenameIdents(af_sa_knee_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`4` = "rod-like PhR",
+`5` = "rod-like PhR",
+`11` = "rod-like PhR",
+`12` = "rod-like PhR",
+`17` = "rod-like PhR",
+`22` = "rod-like PhR",
+
+`18` = "red cone PhR",
+`20` = "PT cone PhR",
+
+`3` = "RPE-like",
+`6` = "RPE-like",
+
+`9` = "Muller glia-like",
+
+`14` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+`19` = "habenula neurons (kiss1)",
+
+`7` = "fibroblasts",
+
+`13` = "erythrocytes",
+
+`16` = "leukocytes",
+
+`15` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`23` = "epithelial cells"
+
+)
+levels(af_sa_knee_res$obj1.2) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_knee_res$dotplot1.2 <- DotPlot(object = af_sa_knee_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_knee_res$dotplot1.2
+```
+
+```{r}
+af_sa_knee_res$tsne1.2 <- DimPlot(af_sa_knee_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_knee_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/fry_fryKnee_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_knee_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/fry_fryKnee_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_knee_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/fry_fryKnee_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_knee_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/fry_fryKnee_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+af_sa_knee_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+```{r, show=FALSE}
+rm(af_sa_knee_res)
+rm(af_sa_knee_obj)
+#rm(af_sa_knee)
+gc()
+```
+
+
+
+kallisto|bustools
+
+```{r}
+set.seed(1234)
+
+kbme <- load_kb_matrix(kb_mtx_dir)
+kbme <- fix_gene_names(kbme,gid_to_gname, strip_version=TRUE)
+kbme_obj <- CreateSeuratObject(counts(kbme))
+kbme_obj_filt <- kbme_obj[rownames(af_sa_knee), colnames(af_sa_knee)]
+kbme_obj_res <- get_clusters(kbme_obj_filt) 
+```
+
+
+### kallisto|bustools (knee) dot-plot at resolution 0.9
+
+```{r}
+kbme_obj_res$dotplot0.9
+```
+
+
+```{r}
+kbme_obj_res$obj0.9 <- RenameIdents(kbme_obj_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`4` = "rod-like PhR",
+`5` = "rod-like PhR",
+`11` = "rod-like PhR",
+`20` = "rod-like PhR",
+
+`15` = "red cone PhR",
+`17` = "PT cone PhR",
+
+`2` = "RPE-like",
+`6` = "RPE-like",
+
+`8` = "Muller glia-like",
+
+`13` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`3` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+`19` = "habenula neurons (kiss1)",
+
+`7` = "fibroblasts",
+
+`12` = "erythrocytes",
+
+`14` = "leukocytes",
+`16` = "leukocytes",
+
+`13` = "microglia/macrhophages",
+
+`18` = "vascular endothelial cells",
+
+`21` = "epithelial cells"
+
+)
+levels(kbme_obj_res$obj0.9) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+kbme_obj_res$dotplot0.9 <- DotPlot(object = kbme_obj_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_obj_res$dotplot0.9
+```
+
+```{r}
+kbme_obj_res$tsne0.9 <- DimPlot(kbme_obj_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_obj_res$tsne0.9 
+```
+
+
+
+### kallisto|bustools (knee) dot-plot at resolution 1.2
+
+```{r}
+kbme_obj_res$dotplot1.2
+```
+
+
+```{r}
+kbme_obj_res$obj1.2 <- RenameIdents(kbme_obj_res$obj1.2,
+`0` = "rod-like PhR",
+`3` = "rod-like PhR",
+`4` = "rod-like PhR",
+`5` = "rod-like PhR",
+`9` = "rod-like PhR",
+`12` = "rod-like PhR",
+`19` = "rod-like PhR",
+`23` = "rod-like PhR",
+
+`16` = "red cone PhR",
+`18` = "PT cone PhR",
+
+`1` = "RPE-like",
+`6` = "RPE-like",
+
+`10` = "Muller glia-like",
+`20` = "Muller glia-like",
+
+`14` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`11` = "habenula neurons (kiss1)",
+`22` = "habenula neurons (kiss1)",
+
+`7` = "fibroblasts",
+
+`13` = "erythrocytes",
+
+`17` = "leukocytes",
+
+`15` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`24` = "epithelial cells"
+
+)
+levels(kbme_obj_res$obj1.2) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+kbme_obj_res$dotplot1.2 <- DotPlot(object = kbme_obj_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_obj_res$dotplot1.2
+```
+
+```{r}
+kbme_obj_res$tsne1.2 <- DimPlot(kbme_obj_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+kbme_obj_res$tsne1.2 
+```
+
+
+# save them
+```{r}
+pdf(file = "figures/kb_fryKnee_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_obj_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/kb_fryKnee_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_obj_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/kb_fryKnee_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_obj_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/kb_fryKnee_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+kbme_obj_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+```{r, show=FALSE}
+rm(kbme)
+rm(kbme_obj)
+rm(kbme_obj_filt)
+rm(kbme_obj_res)
+gc()
+```
+
+
+## STARsolo
+
+```{r, results='hide'}
+set.seed(1234)
+ss_unfilt <- Read10X(file.path(st_dir, "star_solo", "Solo.out", "Gene", "raw"))
+ss_unfilt <- SingleCellExperiment(list(counts = ss_unfilt),
+                              colData = colnames(ss_unfilt),
+                              rowData = rownames(ss_unfilt))
+ss_unfilt_obj <- CreateSeuratObject(counts(ss_unfilt))
+ss_knee_obj <- ss_unfilt_obj[rownames(af_sa_knee), colnames(af_sa_knee)]
+ss_knee_res <- get_clusters(ss_knee_obj) 
+```
+
+
+
+### STARsolo (1MM, knee) dot-plot at resolution 0.9
+
+```{r}
+ss_knee_res$dotplot0.9
+```
+
+
+
+```{r}
+ss_knee_res$obj0.9 <- RenameIdents(ss_knee_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`3` = "rod-like PhR",
+`6` = "rod-like PhR",
+`11` = "rod-like PhR",
+`17` = "rod-like PhR",
+`21` = "rod-like PhR",
+
+`16` = "red cone PhR",
+`19` = "PT cone PhR",
+
+`2` = "RPE-like",
+`5` = "RPE-like",
+
+`8` = "Muller glia-like",
+
+`13` = "neurons",
+
+`9` =  "habenula neurons (gng8)",
+
+`4` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+`20` = "habenula neurons (kiss1)",
+
+`7` = "fibroblasts",
+
+`12` = "erythrocytes",
+
+`15` = "leukocytes",
+
+`14` = "microglia/macrhophages",
+
+`18` = "vascular endothelial cells",
+
+`22` = "epithelial cells"
+
+)
+levels(ss_knee_res$obj0.9) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_knee_res$dotplot0.9 <- DotPlot(object = ss_knee_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_knee_res$dotplot0.9
+```
+
+```{r}
+ss_knee_res$tsne0.9 <- DimPlot(ss_knee_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_knee_res$tsne0.9 
+```
+
+
+### STARsolo (1MM, knee) dot-plot at resolution 1.2
+
+
+```{r}
+ss_knee_res$dotplot1.2
+```
+
+
+```{r}
+ss_knee_res$obj1.2 <- RenameIdents(ss_knee_res$obj1.2,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`3` = "rod-like PhR",
+`7` = "rod-like PhR",
+`9` = "rod-like PhR",
+`13` = "rod-like PhR",
+`19` = "rod-like PhR",
+`24` = "rod-like PhR",
+
+`18` = "red cone PhR",
+`22` = "PT cone PhR",
+
+`4` = "RPE-like",
+`5` = "RPE-like",
+`12` = "RPE-like",
+
+`11` = "Muller glia-like",
+`20` = "Muller glia-like",
+
+`15` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+`23` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`14` = "erythrocytes",
+
+`17` = "leukocytes",
+
+`16` = "microglia/macrhophages",
+
+`21` = "vascular endothelial cells",
+
+`25` = "epithelial cells"
+
+)
+levels(ss_knee_res$obj1.2) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+ss_knee_res$dotplot1.2 <- DotPlot(object = ss_knee_res$obj1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_knee_res$dotplot1.2
+```
+
+```{r}
+ss_knee_res$tsne1.2 <- DimPlot(ss_knee_res$obj1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+ss_knee_res$tsne1.2 
+```
+
+# save them
+```{r}
+pdf(file = "figures/st_1mm_fryKnee_res0.9_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_knee_res$dotplot0.9
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mm_fryKnee_res0.9_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_knee_res$tsne0.9
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+```{r, show=FALSE}
+pdf(file = "figures/st_1mm_fryKnee_res1.2_dot.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_knee_res$dotplot1.2
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+```{r, show=FALSE}
+
+pdf(file = "figures/st_1mm_fryKnee_res1.2_tsne.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ss_knee_res$tsne1.2
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+
+```
+
+
+
+```{r, show=FALSE}
+rm(ss_unfilt)
+rm(ss_unfilt_obj)
+rm(ss_knee_obj)
+rm(ss_knee_res)
+gc()
+```

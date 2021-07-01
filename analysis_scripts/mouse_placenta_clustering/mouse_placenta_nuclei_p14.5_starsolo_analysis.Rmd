@@ -1,0 +1,462 @@
+---
+title: "Clustering analysis for starsolo result of a mouse placenta dataset"
+author: "Dongze He"
+date: "6/9/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# read in config.json file to get the top dir
+```{r}
+topdir = rjson::fromJSON(file = "../../configs/config.json")$top_dir
+indir = file.path(topdir, "results", "star_solo", "mouse_placenta", "star_solo", "Solo.out", "GeneFull", "raw")
+gid_to_gname_path = file.path(topdir, "refs", "refdata-cellranger-mm10-2020A", "geneid_to_name.txt")
+outdir = "figures"
+emptyDrops_CR_path = "cellRangerLikeEmptyDrops.R"
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+    # library(devtools)
+    library(ggplot2)
+    library(SingleCellExperiment)
+    library(Seurat)
+    library(DropletUtils)
+    library(pheatmap)
+    library(reticulate)
+})
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+```
+
+
+# load raw matrix
+```{r}
+star_counts = Read10X(file.path(indir))
+```
+
+```{r}
+source(emptyDrops_CR_path)
+
+e.out = cellRangerLikeEmptyDrops(m=star_counts)
+sum(e.out$is.cell)
+```
+
+
+```{r}
+star_counts = star_counts[, e.out$is.cell]
+```
+
+
+
+```{r}
+object <- CreateSeuratObject(counts = star_counts)
+object[["percent.mt"]] <- PercentageFeatureSet(object, pattern = "^mt-") #Calculate percent mitochondrial genes
+object
+```
+   
+
+
+```{r}
+VlnPlot(object, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,pt.size = 0)
+```
+
+
+```{r}
+pdf(file = file.path(outdir, "st_empryDropCR_filtered_QC.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+VlnPlot(object, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,pt.size = 0)
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+# further filtered by unique gene and mt percent
+```{r}
+object_filt <- subset(object, subset = nFeature_RNA > 500 
+                      & nFeature_RNA < 4000 
+                      & percent.mt < 0.25
+)
+VlnPlot(object_filt, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,pt.size = 0)
+object_filt
+```
+
+```{r}
+pdf(file = file.path(outdir, "st_empryDropCR_filtered_nuclei_QC.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+VlnPlot(object_filt, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,pt.size = 0)
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+# normalize
+
+```{r}
+object_filt <- NormalizeData(object_filt, normalization.method = "LogNormalize", scale.factor = 10000)
+object_filt <- FindVariableFeatures(object_filt, selection.method = "vst", nfeatures = 2000)
+all.genes <- VariableFeatures(object_filt)
+object_filt <- ScaleData(object_filt, features = rownames(object_filt))
+object_filt <- RunPCA(object_filt, features = VariableFeatures(object = object_filt))
+object_filt <- JackStraw(object_filt,dims = 50)
+object_filt <- ScoreJackStraw(object_filt,dims = 1:50)
+
+```
+
+```{r}
+JackStrawPlot(object = object_filt,dims = 1:50)
+```
+
+
+
+```{r}
+pvals_cs = cumsum(object_filt@reductions$pca@jackstraw$overall.p.values[,2])
+```
+
+```{python}
+import numpy as np
+import kneed
+kneedle = kneed.KneeLocator(np.arange(0,50, 1), r.pvals_cs, S=1.0, curve="convex", direction="increasing", interp_method="polynomial")
+knee = kneedle.knee
+kneedle.plot_knee_normalized()
+```
+
+
+```{r}
+sig_pcs = py$knee
+sig_pcs
+```
+
+
+
+
+```{r}
+
+object_filt <- RunUMAP(object_filt, dims = 1:sig_pcs)
+object_filt <- RunTSNE(object_filt, dims = 1:sig_pcs,check_duplicates = FALSE)
+object_filt <- FindNeighbors(object_filt,  reduction = "pca", dims = 1:sig_pcs)
+object_filt <- FindClusters(object_filt, resolution = 0.6)
+```
+
+# Tsne
+```{r}
+DimPlot(object_filt, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+
+```
+
+
+# now read in the R object from the original paper
+
+```{r}
+# downloaded from https://ndownloader.figshare.com/files/25422998
+download.file("https://ndownloader.figshare.com/files/25422998", destfile =file.path( "snRNA-seq_object.Rdata"))
+load(file.path("snRNA-seq_object.Rdata"))
+
+mouse.combined <- FindVariableFeatures(mouse.combined, selection.method = "vst", nfeatures = 2000)
+# mouse.combined <- RunPCA(mouse.combined, features = VariableFeatures(object = mouse.combined))
+```
+
+# now rename the types
+
+
+```{r}
+# From https://elifesciences.org/articles/60266#data figure 1D
+# Common cell type names
+Cluster.4 <- "Decidual Stroma"
+Cluster.13 <- "Blood Cells"
+Cluster.17 <- "Blood Cells"
+Cluster.21 <- "Blood Cells"
+Cluster.22 <- "Blood Cells"
+Cluster.23 <- "Blood Cells"
+Cluster.3 <- "Endothelial"
+Cluster.25 <- "Endothelial"
+Cluster.26 <- "Endothelial"
+Cluster.20 <- "Endothelial"
+Cluster.6 <- "Fetal Mesenchyme"
+Cluster.10 <- "Fetal Mesenchyme"
+Cluster.24 <- "Fetal Mesenchyme"
+Cluster.15 <- "Fetal Mesenchyme"
+Cluster.19 <- "Fetal Mesenchyme"
+Cluster.8 <- "Trophoblast"
+Cluster.16 <- "Trophoblast"
+Cluster.18 <- "Trophoblast"
+Cluster.0 <- "Trophoblast"
+Cluster.14 <- "Trophoblast"
+Cluster.9 <- "Trophoblast"
+Cluster.12 <- "Trophoblast"
+Cluster.7 <- "Trophoblast"
+Cluster.1 <- "Trophoblast"
+Cluster.2 <- "Trophoblast"
+Cluster.11 <- "Trophoblast"
+Cluster.5 <- "Trophoblast"
+
+new.cluster.ids <- c(Cluster.0, Cluster.1, Cluster.2, Cluster.3, Cluster.4, Cluster.5, Cluster.6, Cluster.7, Cluster.8, Cluster.9, Cluster.10,
+                     Cluster.11, Cluster.12, Cluster.13, Cluster.14, Cluster.15, Cluster.16, Cluster.17, Cluster.18, Cluster.19, Cluster.20,
+                     Cluster.21, Cluster.22, Cluster.23, Cluster.24, Cluster.25, Cluster.26)
+
+names(new.cluster.ids) <- levels(mouse.combined)
+mouse.combined <- RenameIdents(mouse.combined, new.cluster.ids)
+mouse.combined$celltype <- Idents(mouse.combined)
+
+mouse.combined$celltype <- factor(mouse.combined$celltype, levels = levels(mouse.combined))
+Idents(mouse.combined) = mouse.combined$celltype
+mouse.combined <- RunTSNE(mouse.combined, dims = 1:20,check_duplicates = FALSE)
+
+```
+
+```{r}
+DimPlot(mouse.combined, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())+ scale_color_manual(values=c("#00AFBB", "#E7B800",  "#D55E00","#FC4E07", "#CC79A7"))
+
+```
+
+
+```{r}
+mouse.E14.5 <- subset(mouse.combined, subset = GA == "E14.5")
+
+mouse.E14.5 <- RunTSNE(mouse.E14.5, dims = 1:20,check_duplicates = FALSE)
+
+# # Step 1: Call the pdf command to start the plot
+pdf(file = file.path(outdir, "ref_tsne.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+DimPlot(mouse.combined, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())+ scale_color_manual(values=c("#00AFBB", "#E7B800",  "#D55E00","#FC4E07", "#CC79A7"))
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+# Find anchors
+
+```{r}
+anchorset <- FindTransferAnchors(reference = mouse.combined, query = object_filt, dims = 1:sig_pcs)
+predictions <- TransferData(anchorset = anchorset, refdata = Idents(mouse.combined), dims = 1:sig_pcs)
+object_filt <- AddMetaData(object_filt, metadata = predictions)
+```
+```{r}
+prediction.scores <- object_filt@meta.data[, grepl("^prediction.score|RNA_snn_res.0.6", names(object_filt@meta.data))]
+prediction.scores <- prediction.scores[,-which(names(prediction.scores) == "prediction.score.max")]
+colnames(prediction.scores) <- gsub("prediction.score.", "", colnames(prediction.scores))
+prediction.scores <- reshape2::melt(prediction.scores, id.vars = "RNA_snn_res.0.6", variable.name = "source", value.name = "score")
+prediction.matrix <- tapply(prediction.scores$score, list(prediction.scores$RNA_snn_res.0.6, prediction.scores$source), median)
+liver.hm <- pheatmap(prediction.matrix, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("white","red"))(200), display_numbers = FALSE, silent = TRUE)
+liver.hm
+```
+
+
+```{r}
+n = colnames(prediction.matrix)
+n = sub("."," ", n, fixed = TRUE)
+new.cluster.ids = c()
+
+for (ridx in 1:nrow(prediction.matrix)) {
+    new.cluster.ids = c(new.cluster.ids, n[which.max(prediction.matrix[ridx,])])
+}
+
+names(new.cluster.ids) <- levels(object_filt)
+object_filt <- RenameIdents(object_filt, new.cluster.ids)
+object_filt$celltype <- Idents(object_filt)
+
+object_filt$celltype <- factor(object_filt$celltype, levels = levels(mouse.combined))
+Idents(object_filt) <- object_filt$celltype
+
+# levels(object_filt) = c("Blood Cells", "Decidual Stroma", "Endothelial", "Fetal Mesenchyme", "Trophoblast")
+```
+
+```{r}
+DimPlot(object_filt, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank()) + scale_color_manual(values=c("#00AFBB", "#E7B800",  "#D55E00","#FC4E07", "#CC79A7"))
+
+```
+
+
+```{r}
+# Step 1: Call the pdf command to start the plot
+pdf(file = file.path(outdir, "st_empryDropCR_filtered_tsne.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+# DimPlot(object_filt, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+DimPlot(object_filt, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank()) + scale_color_manual(values=c("#00AFBB", "#E7B800",  "#D55E00","#FC4E07", "#CC79A7"))
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+
+
+# next, extract trophoblast cells
+
+```{r}
+troph_object = subset(object_filt, idents = "Trophoblast")
+DefaultAssay(troph_object) <- 'RNA'
+troph_object <- FindVariableFeatures(troph_object, selection.method = "vst", nfeatures = 2000)
+all.genes <- VariableFeatures(troph_object)
+troph_object <- ScaleData(troph_object, features = rownames(troph_object))
+troph_object <- RunPCA(troph_object, features = VariableFeatures(object = troph_object))
+troph_object <- JackStraw(troph_object,dims = 50)
+troph_object <- ScoreJackStraw(troph_object,dims = 1:50)
+```
+
+
+```{r}
+JackStrawPlot(object = troph_object,dims = 1:50)
+```
+
+
+```{r}
+pvals_cs = cumsum(troph_object@reductions$pca@jackstraw$overall.p.values[,2])
+```
+
+```{python}
+import numpy as np
+import kneed
+kneedle = kneed.KneeLocator(np.arange(0,50, 1), r.pvals_cs, S=1.0, curve="convex", direction="increasing", interp_method="polynomial")
+knee = kneedle.knee
+kneedle.plot_knee_normalized()
+```
+
+
+```{r}
+sig_pcs = py$knee
+sig_pcs
+```
+
+
+
+```{r}
+# troph_object <- RunUMAP(troph_object, dims = 1:23)
+troph_object <- RunTSNE(troph_object, dims = 1:sig_pcs,check_duplicates = FALSE)
+troph_object <- FindNeighbors(troph_object,  reduction = "pca", dims = 1:sig_pcs)
+troph_object <- FindClusters(troph_object, resolution = 2.5)
+
+DimPlot(troph_object, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+
+```
+
+# trophoblast reference
+```{r}
+# Downloaded from https://ndownloader.figshare.com/files/25422983
+download.file("https://ndownloader.figshare.com/files/25422983", destfile =file.path("AllStages_TrophoblastNuclei_obj.Rdata"))
+
+load(file.path( "AllStages_TrophoblastNuclei_obj.Rdata"))
+mouse.troph.combined <- RunTSNE(mouse.troph.combined, dims = 1:20,check_duplicates = FALSE)
+mouse.troph.combined = FindVariableFeatures(mouse.troph.combined)
+DimPlot(mouse.troph.combined, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+
+```{r}
+mouse.troph.E14.5 <- subset(mouse.troph.combined, subset = GA == "E14.5")
+
+mouse.troph.E14.5 <- RunTSNE(mouse.troph.E14.5, dims = 1:20,check_duplicates = FALSE)
+
+# Step 1: Call the pdf command to start the plot
+pdf(file = file.path(outdir, "ref_trophoblast_tsne.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+DimPlot(mouse.troph.E14.5, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+
+# Find anchors
+
+```{r}
+anchorset <- FindTransferAnchors(reference = mouse.troph.combined, query = troph_object, dims = 1:sig_pcs)
+predictions <- TransferData(anchorset = anchorset, refdata = Idents(mouse.troph.combined), dims = 1:sig_pcs)
+troph_object <- AddMetaData(troph_object, metadata = predictions)
+```
+
+```{r}
+prediction.scores <- troph_object@meta.data[, grepl("^prediction.score|RNA_snn_res.2.5", names(troph_object@meta.data))]
+
+prediction.scores <- prediction.scores[,-which(names(prediction.scores) %in% c("prediction.score.max", "prediction.score.Blood.Cells", "prediction.score.Decidual.Stroma", "prediction.score.Endothelial", "prediction.score.Fetal.Mesenchyme", "prediction.score.Trophoblast"))]
+colnames(prediction.scores) <- gsub("prediction.score.", "", colnames(prediction.scores))
+prediction.scores <- reshape2::melt(prediction.scores, id.vars = "RNA_snn_res.2.5", variable.name = "source", value.name = "score")
+prediction.matrix <- tapply(prediction.scores$score, list(prediction.scores$RNA_snn_res.2.5, prediction.scores$source), median)
+liver.hm <- pheatmap(prediction.matrix, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("white","red"))(200), display_numbers = FALSE, silent = TRUE)
+liver.hm
+```
+
+
+```{r}
+
+n = colnames(prediction.matrix)
+n = sub("S.TGC","S-TGC", n, fixed = TRUE)
+n = sub("."," ", n, fixed = TRUE)
+new.cluster.ids = c()
+
+for (ridx in 1:nrow(prediction.matrix)) {
+    new.cluster.ids = c(new.cluster.ids, n[which.max(prediction.matrix[ridx,])])
+}
+names(new.cluster.ids) <- levels(troph_object)
+troph_object <- RenameIdents(troph_object, new.cluster.ids)
+troph_object$celltype <- Idents(troph_object)
+
+troph_object$celltype <- factor(troph_object$celltype, levels = levels(mouse.troph.combined))
+Idents(troph_object) <- troph_object$celltype
+
+```
+
+
+```{r}
+DimPlot(troph_object, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+
+```
+
+
+```{r}
+# Step 1: Call the pdf command to start the plot
+pdf(file = file.path(outdir, "st_empryDropCR_filtered_trophoblast_tsne.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+DimPlot(troph_object, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+# define marker genes
+```{r}
+markers = c("Ror2", "Lgr5", "Met", "Gcm1", "Synb", "Gcgr", "Vegfa", "Egfr", "Tcf7l1", "Epha4", "Tgfa", "Tfrc", "Glis1", "Stra6", "Nos1ap", "Podxl", 
+            "Lepr", "Ctsq", "Cdh4", "Pvt1", "Prune2", "Ncam1", "Igfbp7", "Pla2g4d", "Plac8", "Mitf", "Flt1", "Prl8a9", "Slco2a1")
+
+DotPlot(object = troph_object, features = markers, dot.scale = 3)  + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+
+```
+
+```{r}
+# Step 1: Call the pdf command to start the plot
+pdf(file = file.path(outdir, "st_empryDropCR_filtered_trophoblast_dot.pdf"),   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+DotPlot(object = troph_object, features = markers, dot.scale = 3)  + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 20), axis.title.y = element_blank(), axis.title.x = element_blank())
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+
+```
+
+
+
+```{r}
+sessionInfo()
+```
+
