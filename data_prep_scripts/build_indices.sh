@@ -67,7 +67,7 @@ while IFS=, read -r name ref_name ind_type read_length code; do
 	star_dir="$index_dir/star_index/"
 	mkdir -p $star_dir
 
-	cmd="/usr/bin/time -v -o $star_dir/index.time $star --runMode genomeGenerate --runThreadsN $threads \
+	cmd="/usr/bin/time -v -o $star_dir/index.time $star --runMode genomeGenerate --runThreadN $threads \
 			--gnomeDir $star_dir --genomeFastaFiles $genome --sjdbGTFfile $gtf"
 	if [ ! -f $star_dir/SA ] || [ $force_build = "true" ]; then
 		echo $cmd
