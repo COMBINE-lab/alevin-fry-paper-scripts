@@ -89,7 +89,7 @@ refs/dr-101-cr-ref/transcriptome_splici/transcriptome_splici_fl98.fa
 
 Run the `build_indices.sh` script for building all the indices.
 ```
-./build_indices.sh ../configs/config.sh refs.csv
+./build_indices.sh ../configs/config.json refs.csv
 ```
 
 Successfully running this step means that all the indices (salmon, starsolo and kb) are available in the following directories:
