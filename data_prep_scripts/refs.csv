@@ -1,5 +1,5 @@
 human-cr3,refdata-cellranger-GRCh38-3.0.0,standard,91,homo_sapiens_mito.fa
 human-2020A,refdata-gex-GRCh38-2020-A,standard,91,homo_sapiens_mito.fa
-mm10-2.1.0,refdata-cellranger-mm10-2.1.0,lamanno,151,danio_rerio_mito.fa
-mm10-2020A,refdata-gex-mm10-2020-A,nucleus,150,danio_rerio_mito.fa
+mm10-2.1.0,refdata-cellranger-mm10-2.1.0,lamanno,151,mus_musculus_mito.fa
+mm10-2020A,refdata-gex-mm10-2020-A,nucleus,150,mus_musculus_mito.fa
 dr-101,dr-101-cr-ref,standard,98,danio_rerio_mito.fa
