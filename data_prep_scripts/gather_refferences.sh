@@ -8,6 +8,7 @@ else
 fi
 
 top_dir=$(jq -r '.top_dir' ${config})
+cr=$(jq -r '.cr_binary' ${config})
 
 tmp_dir=$top_dir/_tmp
 refs_dir=$top_dir/refs
@@ -40,23 +41,11 @@ wget ftp://ftp.ensembl.org/pub/release-101/fasta/danio_rerio/dna/Danio_rerio.GRC
 gunzip $dr_dir/Danio_rerio.GRCz11.101.gtf.gz
 gunzip $dr_dir/Danio_rerio.GRCz11.dna_sm.primary_assembly.fa.gz
 
-wget -O cellranger-5.0.1.tar.gz "https://cf.10xgenomics.com/releases/cell-exp/cellranger-5.0.1.tar.gz?\
-Expires=1624530366&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9jZi4xMHhnZW5vbWljcy5jb20vcmVs\
-ZWFzZXMvY2VsbC1leHAvY2VsbHJhbmdlci01LjAuMS50YXIuZ3oiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG\
-9jaFRpbWUiOjE2MjQ1MzAzNjZ9fX1dfQ__&Signature=hq9doMu0Y2faI7fh-iC~ISGH3mNl-NKOirxGwxxyoAWMzw9rx78u4CbsX\
-W~nEgHSW4vU5QydVnJvGmX-HrM15bOrbb0PCt1oYdDR0q14NBkTGw2uEHMkqYbdwNgPLoMlpHUn9q2bCahkRQg4WqYdTJnm3TEOVt7\
-kEPyVGRn8jqOyZ9KvqvZOlBp1kwWLeQ41ZI2pjvHIyM1i-n-9wKA4ikYeSw3mHlWtzLxXy9jKjlKMVTiya-5d9I5F-1oLkEnX0CtMZ\
-WPQp3q~WZWfxD25CICXi4nNV0Up76Tz2-C6G5cHY~LaYYPBxR9GtAvRYWv-Aj7iTm-ZR7FGCxNgEXggkQ__&Key-Pair-Id=APKAI7\
-S6A5RYOXBWRPDA" -P $tmp_dir
-tar -xzf $tmp_dir/cellranger-5.0.1.tar.gz
-
-cr="$tmp_dir/cellranger-5.0.1/cellranger"
-
 gtf_in="$dr_dir/Danio_rerio.GRCz11.101.gtf"
 gtf_out="$dr_dir/Danio_rerio.GRCz11.101filtered.gtf"
 dna="$dr_dir/Danio_rerio.GRCz11.dna_sm.primary_assembly.fa"
 
-cmd="/usr/bin/time -v -o crmkgtf.time $cr mkgtf $gtf_in $gtf_out \
+cmd="$cr mkgtf $gtf_in $gtf_out \
                    --attribute=gene_biotype:protein_coding \
                    --attribute=gene_biotype:lincRNA \
                    --attribute=gene_biotype:antisense \
@@ -77,10 +66,10 @@ cmd="/usr/bin/time -v -o crmkgtf.time $cr mkgtf $gtf_in $gtf_out \
 echo $cmd
 eval $cmd
 
-cmd="/usr/bin/time -v -o crmkref.time $cr mkref --genome=$dr_cr_dir  --fasta=$dna --genes=$gtf_out"
+cmd="$cr mkref --genome=dr_cr_dir  --fasta=$dna --genes=$gtf_out"
 echo $cmd
 eval $cmd
-
+mv dr_cr_dir $dr_cr_dir
 ### create gene_id to gene_name files
 bash geneid2names.sh $config
 
