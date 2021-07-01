@@ -57,6 +57,9 @@ refs/dr-101-cr-ref/geneid_to_name.txt
 
 ### Generating splici transcriptome for the alevin-fry pipeline
 
+Before starting this step, make sure the required packages (`eisaR`, `Biostrings`, `BSgenome`, `stringr`, `GenomicFeatures`) are installed for R version 4 on your system.
+
+
 We need to build the splici reference which includes the intronic regions of the genes as well as the transcripts. To do so, please execute the `build_splici_txomes.sh` script.
 ```
 ./build_splici_txomes.sh ../configs/config.json refs.csv
@@ -89,7 +92,7 @@ refs/dr-101-cr-ref/transcriptome_splici/transcriptome_splici_fl98.fa
 
 Run the `build_indices.sh` script for building all the indices.
 ```
-./build_indices.sh ../configs/config.sh refs.csv
+./build_indices.sh ../configs/config.json refs.csv
 ```
 
 Successfully running this step means that all the indices (salmon, starsolo and kb) are available in the following directories:
