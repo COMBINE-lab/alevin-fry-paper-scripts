@@ -17,7 +17,7 @@ mkdir -p $samples_dir
 ### pbmc10k
 pbmc_dir=$samples_dir/human-pbmc10k_v3_rl91
 mkdir -p $pbmc_dir
-curl -L https://cg.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_v3_fastqs.tar $tmp_dir/pbmc_10k_v3_fastqs.tar
+curl -L https://cg.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_v3_fastqs.tar -o $tmp_dir/pbmc_10k_v3_fastqs.tar
 tar -xf $tmp_dir/pbmc_10k_v3_fastqs.tar -C $tmp_dir
 mv $tmp_dir/pbmc_10k_v3_fastqs/* $pbmc_dir/
 
