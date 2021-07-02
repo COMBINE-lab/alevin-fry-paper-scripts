@@ -7,7 +7,7 @@ else
 	exit
 fi
 
-topd_dir=$(jq -r '.top_dir' ${config})
+top_dir=$(jq -r '.top_dir' ${config})
 mkdir -p $top_dir/permit_lists
 
 ##cellranger v2 and v3 barcodes
