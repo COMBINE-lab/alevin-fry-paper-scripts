@@ -67,3 +67,5 @@ bash ./run_alevinfry.sh $fry $output $t2g $threads unfilt $unf_list
 
 mv $output/quant_unfilt $results_dir/alevin_fry/sim_data/fry_unfilt_quant_txome_cr-like
 mv $output/quant_knee $results_dir/alevin_fry/sim_data/fry_knee_quant_txome_cr-like
+
+rm $tmp_dir
