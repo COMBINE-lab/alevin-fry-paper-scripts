@@ -57,7 +57,7 @@ refs/dr-101-cr-ref/geneid_to_name.txt
 
 ### Generating splici transcriptome for the alevin-fry pipeline
 
-Before starting this step, make sure the required packages (`eisaR`, `Biostrings`, `BSgenome`, `stringr`, `GenomicFeatures`) are installed for R version 4 on your system.
+Before starting this step, make sure the required packages ([`eisaR`](https://bioconductor.org/packages/release/bioc/html/eisaR.html), [`Biostrings`](https://bioconductor.org/packages/release/bioc/html/Biostrings.html), [`BSgenome`](https://bioconductor.org/packages/release/bioc/html/BSgenome.html), [`stringr`](https://cran.r-project.org/web/packages/stringr/readme/README.html), [`GenomicFeatures`](https://bioconductor.org/packages/release/bioc/html/GenomicFeatures.html)) are installed for R version 4 on your system.
 
 
 We need to build the splici reference which includes the intronic regions of the genes as well as the transcripts. To do so, please execute the `build_splici_txomes.sh` script.
@@ -119,7 +119,7 @@ permit_lists/10xv3barcodes.txt
 
 ### Gathering the samples
 
-To download all the experimental samples used in the manuscript, please run:
+To download all the experimental samples used in the manuscript, please run the following command. This script requires the [`fastq-dump`](https://ncbi.github.io/sra-tools/fastq-dump.html) to run.
 ```
 $./gather_samples.sh ../configs/config.json
 ```
@@ -132,7 +132,7 @@ samples/nucleus_mouse_placenta_E14.5_rl150
 samples/velocity_mouse_pancreas_rl151
 ```
 
-To generate the simulated dataset used in the manuscript, please follow the instructions available in the [STARsolo manuscript repository](https://github.com/dobinlab/STARsoloManuscript) for simulating the data with realisitic intronic and intergenic fragment distributions (but without gene-level multimapping). Then place both the biological and technical reads in a directory named `samples/pbmc_5k_sims_human_CR_3.0.0_MultiGeneNo_rl91`.
+To generate the simulated dataset used in the manuscript, please follow the instructions available in the [STARsolo manuscript repository](https://github.com/dobinlab/STARsoloManuscript) for simulating the data with realisitic intronic and intergenic fragment distributions (but without gene-level multimapping). Then, place both the technical (`_R1_.fq.gz`) and biological (`_R2_.fq.gz`) reads in a directory named `samples/pbmc_5k_sims_human_CR_3.0.0_MultiGeneNo_rl91`.
 
 ### Running the Nextflow pipeline
 
