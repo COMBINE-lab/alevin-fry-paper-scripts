@@ -7,7 +7,7 @@ result_dir=$2
 t2g=$3
 threads=$4
 permit_mode=$5
-unf__list=$6
+unf_list=$6
 
 logs_dir=$result_dir/logs
 mkdir -p $logs_dir
