@@ -7,7 +7,7 @@ else
 	exit
 fi
 
-top_dir=$(jq -r '.top_dir' ${config})
+top_dir=$(jq -r '.top_dir' ${top_dir})
 
 samples="dr_pineal_s2 mouse_placenta"
 for sample in $samples; do
