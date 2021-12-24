@@ -1855,11 +1855,11 @@ ss_unfilt_1mmdir_filt_res$obj0.9 <- RenameIdents(ss_unfilt_1mmdir_filt_res$obj0.
 
 `16` = "microglia/macrhophages",
 
-`18` = "epithelial/endothelial cells"
+`18` = "vascular endothelial cells"
 
 )
 levels(ss_unfilt_1mmdir_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
-                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "epithelial/endothelial cells")
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells")
 ss_unfilt_1mmdir_filt_res$dotplot0.9 <- DotPlot(object = ss_unfilt_1mmdir_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 24), axis.title.y = element_blank(), axis.title.x = element_blank())
 ss_unfilt_1mmdir_filt_res$dotplot0.9
 ```
