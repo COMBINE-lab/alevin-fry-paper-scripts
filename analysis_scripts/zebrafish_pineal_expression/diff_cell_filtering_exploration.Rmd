@@ -1,0 +1,725 @@
+---
+title: "Cluster Analysis Clean"
+author: "Rob Patro"
+date: "5/27/2021"
+output: 
+    html_document:
+        keep_md: true
+---
+
+This script is used for testing the effect of different cell filtering strategies on the clustering results and generating the figures in Supplementary section S6.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Functions used in the analysis 
+
+```{r}
+suppressPackageStartupMessages({
+    library(devtools)
+    library(ggplot2)
+    library(SingleCellExperiment)
+    library(Seurat)
+    library(Matrix)
+    library(DropletUtils)
+})
+set.seed(1234)
+dir.create("figures",recursive = TRUE, showWarnings = FALSE)
+
+```
+
+
+```{r}
+#' Read alevin-fry quantifications into a SingleCellExperiment object
+load_fry <- function(frydir, which_counts = c('S', 'A'), verbose = FALSE) {
+  suppressPackageStartupMessages({
+    library(rjson)
+    library(Matrix)
+    library(SingleCellExperiment)
+  })
+  
+  # read in metadata
+  meta_info <- fromJSON(file = file.path(frydir, "meta_info.json"))
+  ng <- meta_info$num_genes
+  usa_mode <- meta_info$usa_mode
+  
+  if (usa_mode) {
+    if (length(which_counts) == 0) {
+      stop("Please at least provide one status in 'U' 'S' 'A' ")
+    }
+    if (verbose) {
+      message("processing input in USA mode, will return ", paste(which_counts, collapse = '+'))
+    }
+  } else if (verbose) {
+    message("processing input in standard mode, will return spliced count")
+  }
+
+  # read in count matrix
+  af_raw <- readMM(file = file.path(frydir, "alevin", "quants_mat.mtx"))
+  # if usa mode, each gene gets 3 rows, so the actual number of genes is ng/3
+  if (usa_mode) {
+    if (ng %% 3 != 0) {
+      stop("The number of quantified targets is not a multiple of 3")
+    }
+    ng <- as.integer(ng/3)
+  }
+  
+  # read in gene name file and cell barcode file
+  afg <- read.csv(file.path(frydir, "alevin", "quants_mat_cols.txt"), 
+                  strip.white = TRUE, header = FALSE, nrows = ng, 
+                  col.names = c("gene_ids"), row.names = 1)
+  afc <- read.csv(file.path(frydir, "alevin", "quants_mat_rows.txt"), 
+                  strip.white = TRUE, header = FALSE,
+                  col.names = c("barcodes"), row.names = 1)
+
+  # if in usa_mode, sum up counts in different status according to which_counts
+  if (usa_mode) {
+    rd <- list("S" = seq(1, ng), "U" =  seq(ng + 1, 2 * ng),
+               "A" =  seq(2 * ng + 1, 3 * ng))
+    o <- af_raw[, rd[[which_counts[1]]], drop = FALSE]
+    for (wc in which_counts[-1]) {
+      o <- o + af_raw[, rd[[wc]], drop = FALSE]
+    }
+  } else {
+    o <- af_raw
+  }
+  
+  # create SingleCellExperiment object
+  sce <- SingleCellExperiment(list(counts = t(o)),
+                              colData = afc,
+                              rowData = afg
+  )
+  sce
+}
+```
+
+
+```{r}
+get_clusters <- function(seurat_obj, do_scale=TRUE) {
+  seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^mt-")
+  violin_plot <- VlnPlot(seurat_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  plot1 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "percent.mt")
+  plot2 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  feat_plot <- plot1 + plot2
+  
+  seurat_obj_filt <- subset(seurat_obj, subset = nFeature_RNA < 6000 & nCount_RNA < 25000)
+  seurat_obj_filt <- subset(seurat_obj_filt, subset = nFeature_RNA > 200 & nCount_RNA < 15000 & percent.mt < 30)
+  
+  seurat_obj_filt <- NormalizeData(seurat_obj_filt, normalization.method = "LogNormalize", scale.factor = 10000)
+
+  seurat_obj_filt <- FindVariableFeatures(seurat_obj_filt, selection.method = "vst", nfeatures = 2000)
+  
+  all.genes <- rownames(seurat_obj_filt)
+ 
+  seurat_obj_filt <- ScaleData(seurat_obj_filt, features = all.genes, do.scale=do_scale)
+  
+  seurat_obj_filt <- RunPCA(seurat_obj_filt, features = VariableFeatures(object = seurat_obj_filt))
+  pca_plot <- DimPlot(seurat_obj_filt, reduction = "pca")
+
+  seurat_obj_filt <- FindNeighbors(seurat_obj_filt, dims = 1:20)
+  
+  seurat_obj_filt_0.9 <- FindClusters(seurat_obj_filt, resolution = 0.9)
+  seurat_obj_filt_1.2 <- FindClusters(seurat_obj_filt, resolution = 1.2)
+  
+  seurat_obj_filt_0.9 <- RunTSNE(seurat_obj_filt_0.9, dims = 1:20)
+  seurat_obj_filt_1.2 <- RunTSNE(seurat_obj_filt_1.2, dims = 1:20)
+  
+  tsne0.9 <- DimPlot(seurat_obj_filt_0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+  tsne1.2 <- DimPlot(seurat_obj_filt_1.2, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+  
+  # seurat_obj_filt_0.9.markers <- FindAllMarkers(seurat_obj_filt_0.9, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)    
+  # seurat_obj_filt_1.2.markers <- FindAllMarkers(seurat_obj_filt_1.2, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+  
+  feat_genes <- c("exorh", "gnat1", "gngt1", "gnat2", "gngt2a", "col14a1b", "opn1lw1", "parietopsin", "asip2b", "rpe65a", "dkk3b", 
+                  "fabp7b", "elavl4", "cart3", "gng8", "kiss1", "dcn", "igfbp5b", "cahz", "hbaa1", "ccr9a", "il4", "cd74a", "apoc1", 
+                  "kdrl", "plvapa", "epcam", "icn2")
+  dotplot_0.9 <- DotPlot(object = seurat_obj_filt_0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1), axis.title.y = element_blank(), axis.title.x = element_blank())
+  dotplot_1.2 <- DotPlot(object = seurat_obj_filt_1.2, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1), axis.title.y = element_blank(), axis.title.x = element_blank())
+  
+  retlist <- list("violin_plot" = violin_plot, 
+                  "feat_plot" = feat_plot, 
+                  "pca_plot" = pca_plot, 
+                  "tsne0.9" = tsne0.9,
+                  "tsne1.2" = tsne1.2, 
+                  "dotplot0.9" = dotplot_0.9, 
+                  "dotplot1.2" = dotplot_1.2, 
+                  "obj0.9" = seurat_obj_filt_0.9, 
+                  "obj1.2" = seurat_obj_filt_1.2
+                  # ,"markers0.9" = seurat_obj_filt_0.9.markers
+                  # ,"markers1.2" = seurat_obj_filt_1.2.markers
+                  )
+  return(retlist) 
+}
+```
+
+```{r}
+filter_empty <- function(unfiltered_sce, lower=100) {
+  br.out <- barcodeRanks(counts(unfiltered_sce))
+  e.out <- emptyDrops(counts(unfiltered_sce), lower=lower)
+  is.cell <- e.out$FDR <= 0.01
+  is.cell[is.na(is.cell)] <- FALSE
+  sum(is.cell, na.rm=TRUE)
+  filtered_sce <- unfiltered_sce[,is.cell]
+  seu <- CreateSeuratObject(counts(filtered_sce), min.cells = 3, min.feature = 200)
+  return(seu)
+}
+```
+
+```{r}
+filter_empty_shainer <- function(sce) {
+  # parameters / method taken from https://github.com/mstemmer/kb-helper/blob/main/kb_data_to_seurat.Rmd
+  tot_counts <- colSums(counts(sce))
+  summary(tot_counts)
+  bc_rank <- barcodeRanks(counts(sce), lower = 500)
+   
+  # Remove genes that are not detected and empty droplets
+  sce <- sce[, tot_counts > metadata(bc_rank)$inflection]
+  dim(sce) # use print() to show output in a for loop
+  
+  seu <- CreateSeuratObject(counts(sce), min.cells = 3, min.feature = 200)
+  return(seu)
+}
+```
+
+
+```{r}
+gid_to_gname <- read.table('dr_gid_to_gname_fixed.tsv')
+```
+
+```{r}
+fix_gene_names <- function(sce, gid_to_gname, strip_version=FALSE) {
+  if (strip_version) {
+    rownames(sce) <- sub("\\.\\d+", "", rownames(sce))
+  }
+  rownames(sce) <- gid_to_gname$V2[match(rownames(sce), gid_to_gname$V1)]
+  return(sce)
+}
+```
+
+```{r}
+load_kb_matrix <- function(matdir) {
+  
+  bcp <- file.path(matdir, "cells_x_genes.barcodes.txt")
+  gnp <- file.path(matdir, "cells_x_genes.genes.txt")
+  mp <- file.path(matdir, "cells_x_genes.mtx")
+  
+  kbc <- read.csv(bcp, strip.white = TRUE, header = FALSE,
+                  col.names = c("barcodes"), row.names = 1)
+  genes <- read.csv(gnp, strip.white = TRUE, header = FALSE,
+                  col.names = c("barcodes"), row.names = 1)
+  kbm <- readMM(mp)
+  kbme <- SingleCellExperiment(list(counts=t(kbm)), rowData=genes, colData=kbc)
+  return(kbme)
+}
+```
+
+
+```{r}
+feat_genes <- c("exorh", "gnat1", "gngt1", "gnat2", "gngt2a", "col14a1b", "opn1lw1", "parietopsin", "asip2b", "rpe65a", "dkk3b", 
+                "fabp7b", "elavl4", "cart3", "gng8", "kiss1", "dcn", "igfbp5b", "cahz", "hbaa1", "ccr9a", "il4", "cd74a", "apoc1", 
+                "kdrl", "plvapa", "epcam", "icn2")
+```
+
+
+## Shainer et al. 
+
+
+Process the alevin-fry output.
+
+```{r, results='hide'}
+set.seed(1234)
+
+quant_sa_unfilt <- load_fry('fry_results/fry_unfilt_quant_usa_cr-like', which_counts=c('S','A'))
+quant_sa_unfilt <- fix_gene_names(quant_sa_unfilt, gid_to_gname)
+af_sa_unfilt_shainer <- filter_empty_shainer(quant_sa_unfilt)
+ncol(af_sa_unfilt_shainer)
+af_sa_unfilt_original_res <- get_clusters(af_sa_unfilt_shainer)
+```
+
+
+### alevin-fry dot-plot at resolution 0.9
+
+```{r}
+af_sa_unfilt_original_res$dotplot0.9
+```
+
+
+```{r}
+af_sa_unfilt_original_res$obj0.9 <- RenameIdents(af_sa_unfilt_original_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`4` = "rod-like PhR" ,
+`9` = "rod-like PhR",
+`16` = "rod-like PhR",
+`20` = "rod-like PhR",
+
+`15` = "red cone PhR",
+`18` =  "PT cone PhR" ,
+
+`3` = "RPE-like" ,
+`5` = "RPE-like",
+
+`7` = "Muller glia-like" ,
+
+`13` = "neurons",
+
+`8` = "habenula neurons (gng8)",
+
+`2` = "habenula neurons (kiss1)",
+`10` = "habenula neurons (kiss1)",
+`19` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`11` = "erythrocytes",
+
+`12` = "leukocytes",
+
+`14` = "microglia/macrhophages",
+
+`17` = "vascular endothelial cells",
+
+`21` = "epithelial cells")
+levels(af_sa_unfilt_original_res$obj0.9) <- c("rod-like PhR", "red cone PhR", "PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_unfilt_original_res$dotplot0.9 <- DotPlot(object = af_sa_unfilt_original_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 24), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_original_res$dotplot0.9
+```
+
+
+```{r}
+af_sa_unfilt_original_res$tsne0.9 <- DimPlot(af_sa_unfilt_original_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) # + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_original_res$tsne0.9 
+```
+
+
+
+## emptyDrops
+
+
+Process the alevin-fry output.
+
+```{r, results='hide'}
+set.seed(1234)
+
+quant_sa_unfilt <- load_fry('fry_results/fry_unfilt_quant_usa_cr-like', which_counts=c('S','A'))
+quant_sa_unfilt <- fix_gene_names(quant_sa_unfilt,gid_to_gname)
+af_sa_unfilt_filt <- filter_empty(quant_sa_unfilt)
+ncol(af_sa_unfilt_filt)
+af_sa_unfilt_filt_res <- get_clusters(af_sa_unfilt_filt)
+```
+
+
+### alevin-fry dot-plot at resolution 0.9
+
+```{r}
+af_sa_unfilt_filt_res$dotplot0.9
+```
+
+
+
+```{r}
+af_sa_unfilt_filt_res$obj0.9 <- RenameIdents(af_sa_unfilt_filt_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`10` = "rod-like PhR",
+`16` = "rod-like PhR",
+`18` = "rod-like PhR",
+
+`13` = "cone PhR",
+
+`2` = "RPE-like",
+`4` = "RPE-like",
+
+`7` = "Muller glia-like",
+`12` = "Muller glia-like",
+
+`14` = "neurons",
+
+`8` =  "habenula neurons (gng8)",
+
+`3` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+
+`5` = "fibroblasts",
+
+`6` = "erythrocytes",
+
+`11` = "leukocytes",
+`19` = "leukocytes",
+
+`15` = "microglia/macrhophages",
+
+
+
+`17` = "vascular endothelial cells",
+
+`20` = "epithelial cells"
+
+
+)
+levels(af_sa_unfilt_filt_res$obj0.9) <- c("rod-like PhR", "cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_unfilt_filt_res$dotplot0.9 <- DotPlot(object = af_sa_unfilt_filt_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 24), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_filt_res$dotplot0.9
+```
+
+
+```{r}
+af_sa_unfilt_filt_res$tsne0.9 <- DimPlot(af_sa_unfilt_filt_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) #+ theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_unfilt_filt_res$tsne0.9 
+```
+
+
+## fry knee
+
+
+Load alevin-fry first to get the cell set
+
+```{r, results='hide'}
+set.seed(1234)
+
+af_sa_knee <- load_fry('fry_results/fry_knee_quant_usa_cr-like', which_counts=c('S','A'))
+af_sa_knee <- fix_gene_names(af_sa_knee,gid_to_gname)
+af_sa_knee_obj <- CreateSeuratObject(counts(af_sa_knee), min.cells = 3, min.feature = 200)
+ncol(af_sa_knee_obj)
+af_sa_knee_res <- get_clusters(af_sa_knee_obj)
+```
+
+
+### alevin-fry (knee) dot-plot at resolution 0.9
+
+```{r}
+af_sa_knee_res$dotplot0.9
+```
+
+
+```{r}
+af_sa_knee_res$obj0.9 <- RenameIdents(af_sa_knee_res$obj0.9,
+`0` = "rod-like PhR",
+`1` = "rod-like PhR",
+`2` = "rod-like PhR",
+`10` = "rod-like PhR",
+`19` = "rod-like PhR",
+
+`15` = "red cone PhR",
+`16` = "PT cone PhR",
+
+`3` = "RPE-like",
+`5` = "RPE-like",
+
+`8` = "Muller glia-like",
+
+`12` = "neurons",
+
+`7` =  "habenula neurons (gng8)",
+
+`4` = "habenula neurons (kiss1)",
+`9` = "habenula neurons (kiss1)",
+`18` = "habenula neurons (kiss1)",
+
+`6` = "fibroblasts",
+
+`11` = "erythrocytes",
+
+`14` = "leukocytes",
+
+`13` = "microglia/macrhophages",
+
+`17` = "vascular endothelial cells",
+
+`20` = "epithelial cells"
+
+)
+levels(af_sa_knee_res$obj0.9) <- c("rod-like PhR", "red cone PhR","PT cone PhR", "RPE-like", "Muller glia-like", "neurons", "habenula neurons (gng8)", "habenula neurons (kiss1)",
+                                          "fibroblasts", "erythrocytes", "leukocytes", "microglia/macrhophages", "vascular endothelial cells", "epithelial cells")
+af_sa_knee_res$dotplot0.9 <- DotPlot(object = af_sa_knee_res$obj0.9, dot.scale = 3, features = feat_genes) + theme(axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1),axis.text.y = element_text(size = 24), axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_knee_res$dotplot0.9
+```
+
+
+```{r}
+af_sa_knee_res$tsne0.9 <- DimPlot(af_sa_knee_res$obj0.9, reduction = "tsne", label=TRUE,repel=TRUE) + theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+af_sa_knee_res$tsne0.9 
+```
+
+## Venn on cell filtering strategies
+
+```{r}
+# install.packages("ggVennDiagram")
+library(ggVennDiagram)
+
+l = list("original_y" = colnames(af_sa_unfilt_shainer),
+          "ed_n" = colnames(af_sa_unfilt_filt),
+          "knee_y" = colnames(af_sa_knee_obj)
+         )
+
+ggVennDiagram(l)
+
+```
+
+```{r}
+pdf(file = "superset_figures/venn_selected_cells_diff_cell_filtering.pdf",   # The directory you want to save the file in
+    width = 8, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ggVennDiagram(l)
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+
+```{r}
+original_gene_act = rowSums(af_sa_unfilt_shainer@assays$RNA@counts  > 0)
+length(original_gene_act)
+sum(original_gene_act != 0)
+```
+
+```{r}
+ed_gene_act = rowSums(af_sa_unfilt_filt@assays$RNA@counts  > 0)
+length(ed_gene_act)
+sum(ed_gene_act != 0)
+```
+
+
+```{r}
+knee_gene_act = rowSums(af_sa_knee_obj@assays$RNA@counts  > 0)
+length(knee_gene_act)
+sum(knee_gene_act != 0)
+```
+
+
+
+
+```{r}
+# install.packages("ggVennDiagram")
+library(ggVennDiagram)
+
+l = list("original_y" = names(original_gene_act[original_gene_act != 0]),
+          "ed_n" = names(ed_gene_act[ed_gene_act != 0]),
+          "knee_y" = names(knee_gene_act[knee_gene_act != 0])
+         )
+
+ggVennDiagram(l)
+
+```
+
+
+```{r}
+pdf(file = "superset_figures/venn_expressed_genes_all_cells_diff_cell_filtering.pdf",   # The directory you want to save the file in
+    width = 8, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ggVennDiagram(l)
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+## PHR clusters in different cell filtering strategies.
+
+
+### Shainer
+
+```{r}
+cb_original_red_phr = colnames(af_sa_unfilt_original_res$obj0.9)[af_sa_unfilt_original_res$obj0.9@active.ident == "red cone PhR"]
+cb_original_pt_phr = colnames(af_sa_unfilt_original_res$obj0.9)[af_sa_unfilt_original_res$obj0.9@active.ident == "PT cone PhR"]
+
+cb_original_red_phr
+```
+
+```{r}
+cb_original_pt_phr
+```
+
+### ed
+
+```{r}
+cb_ed_cone_phr = colnames(af_sa_unfilt_filt_res$obj0.9)[af_sa_unfilt_filt_res$obj0.9@active.ident == "cone PhR"]
+
+cb_ed_cone_phr
+```
+
+### knee
+
+
+
+```{r}
+cb_knee_red_phr = colnames(af_sa_knee_res$obj0.9)[af_sa_knee_res$obj0.9@active.ident == "red cone PhR"]
+cb_knee_pt_phr = colnames(af_sa_knee_res$obj0.9)[af_sa_knee_res$obj0.9@active.ident == "PT cone PhR"]
+
+cb_knee_red_phr
+```
+
+```{r}
+cb_knee_pt_phr
+```
+
+```{r}
+
+l = list("original_y" = c(cb_original_pt_phr, cb_original_red_phr),
+          "ed_n" = cb_ed_cone_phr,
+          "knee_y" = c(cb_knee_pt_phr, cb_knee_red_phr)
+         )
+
+ggVennDiagram(l)
+
+```
+
+```{r}
+pdf(file = "superset_figures/venn_cone_cells_diff_cell_filtering.pdf",   # The directory you want to save the file in
+    width = 8, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+ggVennDiagram(l)
+
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+## HVG
+
+### shainer
+
+```{r}
+gene_original_red_cone = FindMarkers(af_sa_unfilt_original_res$obj0.9,ident.1 = "red cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_original_red_cone = rownames(gene_original_red_cone)[gene_original_red_cone$p_val_adj < 0.05]
+gene_original_pt_cone = FindMarkers(af_sa_unfilt_original_res$obj0.9,ident.1 = "PT cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_original_pt_cone = rownames(gene_original_pt_cone)[gene_original_pt_cone$p_val_adj < 0.05]
+
+gene_original_pt_vs_red = FindMarkers(af_sa_unfilt_original_res$obj0.9,ident.1 = "PT cone PhR", ident.2 = "red cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_original_pt_vs_red = rownames(gene_original_pt_vs_red)[gene_original_pt_vs_red$p_val_adj < 0.05]
+
+```
+
+### ed
+
+```{r}
+gene_ed_cone = FindMarkers(af_sa_unfilt_filt_res$obj0.9,ident.1 = "cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_ed_cone = rownames(gene_ed_cone)[gene_ed_cone$p_val_adj < 0.05]
+
+```
+
+### knee
+
+```{r}
+gene_knee_red_cone = FindMarkers(af_sa_knee_res$obj0.9,ident.1 = "red cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_knee_red_cone = rownames(gene_knee_red_cone)[gene_knee_red_cone$p_val_adj < 0.05]
+
+gene_knee_pt_cone = FindMarkers(af_sa_knee_res$obj0.9,ident.1 = "PT cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_knee_pt_cone = rownames(gene_knee_pt_cone)[gene_knee_pt_cone$p_val_adj < 0.05]
+
+gene_knee_pt_vs_red = FindMarkers(af_sa_knee_res$obj0.9,ident.1 = "PT cone PhR", ident.2 = "red cone PhR", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gene_knee_pt_vs_red = rownames(gene_knee_pt_vs_red)[gene_knee_pt_vs_red$p_val_adj < 0.05]
+```
+
+
+
+
+```{r}
+
+l = list("original_red" = gene_original_red_cone,
+          "original_pt" = gene_original_pt_cone,
+          "ed_cone" = gene_ed_cone
+         )
+
+ggVennDiagram(l)
+
+```
+
+
+```{r}
+
+l = list("knee_red" = gene_knee_red_cone,
+          "knee_pt" = gene_knee_pt_cone,
+          "ed_cone" = gene_ed_cone
+         )
+
+ggVennDiagram(l)
+
+```
+
+```{r}
+
+l = list("original_red" = gene_original_red_cone,
+          "original_pt" = gene_original_pt_cone,
+         "knee_red" = gene_knee_red_cone,
+          "knee_pt" = gene_knee_pt_cone
+         )
+
+ggVennDiagram(l)
+
+```
+
+```{r}
+library(UpSetR)
+
+all_g = unique(c(gene_ed_cone,
+                  gene_knee_pt_cone,
+                  gene_knee_red_cone,
+                  gene_original_pt_cone,
+                  gene_original_red_cone
+                  )
+                )
+
+df = data.frame(matrix(0, nrow = length(all_g),
+                       ncol = 5
+                       )
+                )
+colnames(df) = c("original_red", "original_pt", "ed_cone", "knee_red","knee_pt")
+
+rownames(df) = all_g
+
+df[gene_original_red_cone,"original_red"] = 1
+df[gene_original_pt_cone,"original_pt"] = 1
+df[gene_ed_cone,"ed_cone"] = 1
+df[gene_knee_pt_cone,"knee_pt"] = 1
+df[gene_knee_red_cone,"knee_red"] = 1
+
+
+
+us = upset(df, nsets = 5, nintersects = 100, mb.ratio = c(0.5, 0.5),
+      order.by = c("freq", "degree"), decreasing = c(TRUE,FALSE),mainbar.y.label = "# ovelapping genes", sets.x.label = "# HVG",text.scale = 2)
+
+us
+```
+
+
+```{r}
+pdf(file = "superset_figures/superset_diff_cell_filtering.pdf",   # The directory you want to save the file in
+    width = 12, # The width of the plot in inches
+    height = 8) # The height of the plot in inches
+
+us
+# Step 3: Run dev.off() to create the file!
+dev.off()
+```
+
+
+
+```{r}
+upset(df, sets = c("ed_cone", "knee_pt", "original_pt"), nintersects = 30, mb.ratio = c(0.5, 0.5),
+      order.by = c("freq", "degree"), decreasing = c(TRUE,FALSE),mainbar.y.label = "# ovelapping genes", sets.x.label = "# HVG")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
