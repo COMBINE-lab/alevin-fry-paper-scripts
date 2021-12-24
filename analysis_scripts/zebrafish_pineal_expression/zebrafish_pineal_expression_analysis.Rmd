@@ -167,7 +167,7 @@ filter_empty <- function(unfiltered_sce, lower=100) {
   is.cell[is.na(is.cell)] <- FALSE
   sum(is.cell, na.rm=TRUE)
   filtered_sce <- unfiltered_sce[,is.cell]
-  seu <- CreateSeuratObject(counts(filtered_sce))
+  seu <- CreateSeuratObject(counts(filtered_sce), min.cells = 3, min.feature = 200)
   return(seu)
 }
 ```
@@ -183,7 +183,7 @@ filter_empty_shainer <- function(sce) {
   sce <- sce[, tot_counts > metadata(bc_rank)$inflection]
   dim(sce) # use print() to show output in a for loop
   
-  seu <- CreateSeuratObject(counts(sce))
+  seu <- CreateSeuratObject(counts(sce), min.cells = 3, min.feature = 200)
   return(seu)
 }
 ```
@@ -2121,7 +2121,7 @@ Load alevin-fry first to get the cell set
 set.seed(1234)
 af_sa_knee <- load_fry(file.path(fry_dir, "fry_knee_quant_usa_cr-like"), which_counts=c('S','A'))
 af_sa_knee <- fix_gene_names(af_sa_knee,gid_to_gname)
-af_sa_knee_obj <- CreateSeuratObject(counts(af_sa_knee))
+af_sa_knee_obj <- CreateSeuratObject(counts(af_sa_knee), min.cells = 3, min.feature = 200)
 af_sa_knee_res <- get_clusters(af_sa_knee_obj) 
 ```
 
@@ -2311,7 +2311,7 @@ set.seed(1234)
 
 kbme <- load_kb_matrix(kb_mtx_dir)
 kbme <- fix_gene_names(kbme,gid_to_gname, strip_version=TRUE)
-kbme_obj <- CreateSeuratObject(counts(kbme))
+kbme_obj <- CreateSeuratObject(counts(kbme), min.cells = 3, min.feature = 200)
 kbme_obj_filt <- kbme_obj[rownames(af_sa_knee), colnames(af_sa_knee)]
 kbme_obj_res <- get_clusters(kbme_obj_filt) 
 ```
@@ -2503,7 +2503,7 @@ ss_unfilt <- Read10X(file.path(st_dir, "star_solo", "Solo.out", "Gene", "raw"))
 ss_unfilt <- SingleCellExperiment(list(counts = ss_unfilt),
                               colData = colnames(ss_unfilt),
                               rowData = rownames(ss_unfilt))
-ss_unfilt_obj <- CreateSeuratObject(counts(ss_unfilt))
+ss_unfilt_obj <- CreateSeuratObject(counts(ss_unfilt), min.cells = 3, min.feature = 200)
 ss_knee_obj <- ss_unfilt_obj[rownames(af_sa_knee), colnames(af_sa_knee)]
 ss_knee_res <- get_clusters(ss_knee_obj) 
 ```
